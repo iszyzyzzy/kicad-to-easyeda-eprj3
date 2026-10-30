@@ -43,16 +43,14 @@ const PCB_MAP = {
   FILL: 't-pcb-fill', REGION: 't-pcb-region', POUR: 't-pcb-pour', POURED: 't-pcb-poured',
   IMAGE: 't-pcb-image', STRING: 't-pcb-string',
   COMPONENT: 'tm-pcb-component', PAD_NET: 't-pad-net-wire', ATTR: 't-pcb-attr',
-  BOARD: 't-pcb-board', PART: 't-part'
+  BOARD: 't-pcb-board', PART: 't-part', DIMENSION: 't-pcb-dimension'
 };
-// DIMENSION is excluded: the official schema (type/coords/text/textFollow) does not
-// match what the real app writes (dimensionType/controlDot/relationIds) — both the
-// skill examples and exported real projects use the latter, which we follow.
 
 // Known divergences where the real app output contradicts its own schema; we follow
 // the app output, so loosen the record before validating.
 function loosen(type, body) {
   const b = { ...body };
+  if (type === 'DIMENSION' && b.text) b.text = loosen('STRING', b.text);
   if (typeof b.groupId === 'number') b.groupId = String(b.groupId); // app writes 0, schema says string
   if (type === 'STRING') {
     if (typeof b.bold === 'number') b.bold = !!b.bold;         // app writes 0/1

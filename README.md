@@ -107,7 +107,7 @@ Wrote DeviceLED.elibz2: 596 symbols, 167 footprints (636245 bytes)
 | `segment` / `arc`（PCB 走线） | 对应层上的 `FILL`（直线为闭合细多边形；圆弧为带 `ARC` 段的闭合多边形） |
 | `via` | `VIA`（网络/孔径/盘径） |
 | `zone` | `POUR`（`pourType`/`keepIsland`）+ 每个 `filled_polygon` 合并出的 `POURED`（`pourFill`，head id 关联 `POUR`）；keepout → `REGION`（`regionType PROHIBIT` + `prohibitType`） |
-| `dimension`（aligned/orthogonal/radial/leader） | `DIMENSION`（`dimensionType LENGTH-CONSTRAINT` + `controlDot`） |
+| `dimension`（aligned/orthogonal/radial/leader） | `DIMENSION`（`type` / `coords` + 内嵌 `text`；包含保存器所需的字体信息） |
 | `gr_line` / `gr_arc` / `gr_rect` / `gr_poly` / `gr_circle` / `bezier` | `LINE` / `ARC` / 闭合 `POLY`（圆为 `["CIRCLE",…]` 路径、贝塞尔为 `"C"` 段路径） |
 | `gr_text` | `STRING`（对齐 origin、镜像、knockout→reverse） |
 | `gr_rect`/`gr_line`/`gr_arc`/`gr_poly` on `Edge.Cuts` | 拼接为 `POLY` `BOARD_OUTLINE`（`layerId=11`） |
@@ -164,7 +164,7 @@ npm test
 node test/validate-format.js <生成的 .esch2|.epcb2|.elibu> <sch|pcb|lib>
 ```
 
-> 验证器依赖 [easyeda-pro-format-skill](https://github.com/easyeda/easyeda-pro-format-skill) 的 `validate.js`，默认在其同级目录查找；也可通过环境变量 `EASYEDA_FORMAT_SKILL` 指定路径。注：官方 Schemas 与真实导出数据存在少量出入（如 `POUR.pourType`、PCB `ATTR.groupID`、`DIMENSION` 结构等），验证器已按真实导出数据校准。
+> 验证器依赖 [easyeda-pro-format-skill](https://github.com/easyeda/easyeda-pro-format-skill) 的 `validate.js`，默认在其同级目录查找；也可通过环境变量 `EASYEDA_FORMAT_SKILL` 指定路径。验证器兼容客户端写盘中的数值 `groupId`、PCB `ATTR.groupID` 和默认网络空载荷；尺寸标注按 `type` / `coords` / `text` 完整校验。
 
 ## 相关项目
 

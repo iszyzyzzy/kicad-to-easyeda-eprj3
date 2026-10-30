@@ -293,7 +293,8 @@ function main() {
     const str = pcbDoc.records.find(r => r.type === 'STRING' && r.body.text === 'board');
     assert(!!str && str.body.layerId === 3, 'gr_text becomes a STRING record');
     const dim = pcbDoc.records.find(r => r.type === 'DIMENSION');
-    assert(dim && dim.body.dimensionType === 'LENGTH-CONSTRAINT' && dim.body.controlDot.length === 8, 'dimension becomes a LENGTH-CONSTRAINT DIMENSION');
+    assert(dim && dim.body.type === 'LENGTH' && dim.body.coords.length === 8 && dim.body.text.fontFamily === 'default',
+      '尺寸标注含现代坐标和内嵌文字，可供保存压缩器读取字体');
     const pour = pcbDoc.records.find(r => r.type === 'POUR');
     const poured = pcbDoc.records.find(r => r.type === 'POURED');
     assert(pour && pour.body.netName === 'VCC' && pour.body.layerId === 1, 'zone becomes a POUR on F.Cu with its net');

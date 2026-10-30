@@ -1171,8 +1171,9 @@ function convertDimension(node, push) {
   const style = findSubNode(node, 'style');
   const thick = style ? findSub(style, 'thickness') : null;
   const common = {
-    layerId, dimensionType: 'LENGTH-CONSTRAINT', unit: '', strokeWidth: thick ? Math.max(1, toMil(thick[0])) : 0,
-    accuracy: 0, relationIds: [], locked: false, visible: true, cover: 0, name: '', valid: true
+    partitionId: '', groupId: 0, layerId, type: 'LENGTH', unit: 'mm',
+    strokeWidth: thick ? toMil(thick[0]) : 2, precision: 4,
+    textFollow: true, locked: false, zIndex: -1
   };
   let controlDot = null;
   if ((ktype === 'aligned' || ktype === 'orthogonal') && pts.length >= 2) {
@@ -1191,7 +1192,19 @@ function convertDimension(node, push) {
     warn(`dimension type "${ktype}" not convertible`);
     return;
   }
-  push('DIMENSION', { ...common, controlDot });
+  const textNode = findSubNode(node, 'gr_text');
+  const text = textNode ? pcbString(textNode, textNode[1]?.v || '') : pcbString(node, '');
+  text.layerId = layerId;
+  if (!textNode) { text.x = null; text.y = null; }
+  const format = findSubNode(node, 'format');
+  common.precision = Number((format && findSub(format, 'precision')?.[0]) ?? 4);
+  let coords = [...controlDot.slice(6, 8), ...controlDot.slice(0, 4), ...controlDot.slice(4, 6)];
+  if (ktype === 'radial') {
+    common.type = 'RADIUS';
+    coords = [...pts[1], ...pts[0], Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1])];
+  }
+  // 保存压缩器也会扫描内嵌文字的字体，缺失 text 会使整个 PCB 导出失败。
+  push('DIMENSION', { ...common, coords, text });
 }
 
 // zone → POUR (+POURED per filled_polygon) or REGION for keepouts
