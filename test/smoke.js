@@ -349,6 +349,41 @@ function main() {
     assert(libFpDoc && libFpDoc.records.some(r => r.type === 'PAD' && r.body.num === '1'), 'footprint doc contains pads');
     assert(libFpDoc && !libFpDoc.records.some(r => r.type === 'PART'), 'library footprint docs carry no PART record');
 
+    // 新版网络名和混合直线/反向圆弧必须经过真实转换入口验证。
+    const modernSrc = path.join(tmp, 'modern-source');
+    const modernDst = path.join(tmp, 'modern-output');
+    fs.mkdirSync(modernSrc);
+    fs.writeFileSync(path.join(modernSrc, 'modern.kicad_pcb'), `(kicad_pcb (version 20260206)
+      (segment (start 0 0) (end 1 0) (width 0.25) (layer "F.Cu") (net "123"))
+      (via (at 1 0) (size 0.8) (drill 0.4) (net "GND"))
+      (footprint "TEST" (layer "F.Cu") (at 1 1)
+        (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net "123"))
+        (fp_line (start 0 0) (end 0 0) (layer "F.SilkS"))
+        (fp_arc (start 0 0) (mid 0.05 0.05) (end 0.1 0) (stroke (width 0.15)) (layer "F.SilkS"))
+        (fp_poly (pts (xy 0 0) (xy 1 0) (xy 1 0) (xy 0 1) (xy 0 0)) (layer "F.SilkS")))
+      (gr_line (start 0 0) (end 10 0) (layer "Edge.Cuts"))
+      (gr_line (start 0 10) (end 10 10) (layer "Edge.Cuts"))
+      (gr_arc (start 10 10) (mid 15 5) (end 10 0) (layer "Edge.Cuts"))
+      (gr_line (start 0 10) (end 0 0) (layer "Edge.Cuts"))
+      (gr_poly (pts (xy 0 0) (xy 1 0) (xy 0 1)) (layer "F.SilkS")))`);
+    run([SCRIPTS + '/convert-kicad.js', 'convert', modernSrc, modernDst]);
+    const modern = readRecords(path.join(modernDst, 'pcb', 'PCB1.epcb2'));
+    assert(modern.some(r => r.type === 'LINE' && r.body.netName === '123'), '新版带引号的数字网络名称保留');
+    assert(modern.some(r => r.type === 'VIA' && r.body.netName === 'GND'), '新版过孔网络名称保留');
+    assert(modern.some(r => r.type === 'PAD_NET' && r.body.padNet === '123'), '新版焊盘网络关联保留');
+    const mixed = modern.filter(r => r.type === 'POLY' && r.body.polyType === 'BOARD_OUTLINE');
+    assert(mixed.length === 1 && mixed[0].body.path.includes('ARC'), '乱序直线和反向圆弧拼成一个完整板框');
+    const modernFp = docSegments(modern).find(d => d.head.body.docType === 'FOOTPRINT');
+    const fpPolys = modernFp.records.filter(r => r.type === 'POLY');
+    assert(fpPolys.filter(r => r.body.path[2] === 'L').length === 1 && fpPolys.find(r => r.body.path[2] === 'L').body.path.length === 9,
+      '跳过零长度封装线段，重复顶点和已闭合多边形不生成空线段');
+    assert(fpPolys.some(r => r.body.path[2] === 'ARC') && !modernFp.records.some(r => r.type === 'ARC'),
+      '线宽超过直径的封装圆弧使用 POLY 路径保留，避免 ARC 走线空包围盒');
+    const mp = mixed[0].body.path;
+    assert(mp[0] === mp.at(-2) && mp[1] === mp.at(-1), '混合板框首尾闭合');
+    assert(modern.filter(r => r.type === 'POLY').every(r =>
+      typeof r.body.path[0] !== 'number' || typeof r.body.path[2] === 'string'), 'PCB 和封装折线均有显式路径指令');
+
     // ---- parser (nested unit symbols) ----
     const { parseSymbolFile } = require(path.join(SCRIPTS, 'lib', 'kicad'));
     const syms = parseSymbolFile(path.join(tmp, 'sample.kicad_sym'));
@@ -372,3 +407,4 @@ function main() {
 }
 
 main();
+require('./pcb-fidelity');

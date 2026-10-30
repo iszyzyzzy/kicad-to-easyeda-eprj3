@@ -396,8 +396,8 @@ function footprintPadRecord(pad, opts = {}) {
     body: {
       groupId: 0, netName: pad.netName || '', layerId: footprintPadLayerId(pad), num: pad.number || '',
       centerX: kicadToEprj3(parseFloat(x)), centerY: flipY(parseFloat(y)),
-      padAngle: flipRot(pad.angle), hole: footprintPadHole(pad),
-      defaultPad: { padType: shape, width: kicadToEprj3(parseFloat(w)), height: kicadToEprj3(parseFloat(h)), radius: 0 },
+      padAngle: ((Number(pad.angle) || 0) % 360 + 360) % 360, hole: footprintPadHole(pad),
+      defaultPad: { padType: shape, width: kicadToEprj3(parseFloat(w)), height: kicadToEprj3(parseFloat(h)), radius: shape === 'RECT' ? Math.min(kicadToEprj3(+w), kicadToEprj3(+h)) * (pad.roundrectRatio || 0) : 0 },
       specialPad: [],
       padOffsetX: 0, padOffsetY: 0,
       relativeAngle: 0,
@@ -410,6 +410,19 @@ function footprintPadRecord(pad, opts = {}) {
       locked: false, zIndex: opts.zIndex
     }
   };
+}
+
+// 重复顶点会生成零长度线段，客户端为其建立空间索引时会抛出空图元异常。
+function pcbPolygonPath(flat) {
+  const points = [];
+  for (let i = 0; i < flat.length; i += 2) {
+    if (!points.length || Math.hypot(flat[i] - points.at(-2), flat[i + 1] - points.at(-1)) > 1e-8)
+      points.push(flat[i], flat[i + 1]);
+  }
+  if (points.length < 6) return null;
+  if (Math.hypot(points[0] - points.at(-2), points[1] - points.at(-1)) > 1e-8)
+    points.push(points[0], points[1]);
+  return [points[0], points[1], 'L', ...points.slice(2)];
 }
 
 function buildFootprintRecords(kicadFp, opts = {}) {
@@ -464,6 +477,7 @@ function buildFootprintRecords(kicadFp, opts = {}) {
     const layerId = /SilkS$/.test(lname) ? (/^B\./.test(lname) ? 4 : 3) : 13;
     const width = Math.max(1, Math.round(kicadToEprj3(parseFloat(sh.width) || 0.15)));
     if (sh.kind === 'fp_line') {
+      if (Math.hypot(sh.x1 - sh.x2, sh.y1 - sh.y2) < 1e-9) continue;
       records.push({
         head: { type: 'POLY', ticket, id: 'e' + randId() },
         body: {
@@ -485,11 +499,13 @@ function buildFootprintRecords(kicadFp, opts = {}) {
     } else if (sh.kind === 'fp_poly' && sh.pts && sh.pts.length > 2) {
       const flat = [];
       for (const p of sh.pts) flat.push(kicadToEprj3(p.x), flipY(p.y));
+      const path = pcbPolygonPath(flat);
+      if (!path) continue;
       records.push({
         head: { type: 'POLY', ticket, id: 'e' + randId() },
         body: {
           groupId: 0, netName: '', layerId, width,
-          path: [...flat, flat[0], flat[1]],
+          path,
           locked: false, zIndex: ticket, polyType: 'NORMAL'
         }
       });
@@ -509,14 +525,22 @@ function buildFootprintRecords(kicadFp, opts = {}) {
       const x2 = kicadToEprj3(sh.x2), y2 = flipY(sh.y2);
       const { sweep } = arcSweep(x1, y1, mx, my, x2, y2);
       records.push({
-        head: { type: 'ARC', ticket, id: 'e' + randId() },
+        head: { type: 'POLY', ticket, id: 'e' + randId() },
         body: {
           groupId: 0, netName: '', layerId,
-          startX: x1, startY: y1, endX: x2, endY: y2,
-          angle: Math.round(sweep * 100) / 100, width,
+          // 丝印小圆弧的线宽可能大于直径；ARC 走线渲染会生成空包围盒。
+          path: [x1, y1, 'ARC', sweep, x2, y2], polyType: 'NORMAL', width,
           locked: false, zIndex: ticket
         }
       });
+    }
+    if (sh.fill && ['fp_rect', 'fp_poly', 'fp_circle'].includes(sh.kind)) {
+      const rec = records.at(-1);
+      const path = rec.body.path;
+      rec.head.type = 'FILL';
+      delete rec.body.polyType;
+      Object.assign(rec.body, { fillStyle: 'SOLID', width: 0,
+        path: Array.isArray(path[0]) ? path : [path] });
     }
   }
 
@@ -550,7 +574,7 @@ function buildFootprintRecords(kicadFp, opts = {}) {
 }
 
 module.exports = {
-  buildSymbolRecords, buildFootprintRecords, footprintPadRecord,
+  buildSymbolRecords, buildFootprintRecords, footprintPadRecord, pcbPolygonPath,
   kicadToEprj3, flipY, kicadToSchUnit, schX, schY, flipYSch, flipRot, circumcenter, arcSweep,
   mapStroke, mapFill, PIN_ELECTRIC_MAP, PIN_TYPE_NAME, PIN_SHAPE_MAP
 };

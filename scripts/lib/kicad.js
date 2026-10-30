@@ -19,7 +19,12 @@ function tokenize(text) {
     if (c === '"') {
       let j = i + 1; let s = '';
       while (j < text.length && text[j] !== '"') {
-        if (text[j] === '\\') { s += text[j + 1]; j += 2; continue; }
+        if (text[j] === '\\') {
+          const escaped = { n: '\n', r: '\r', t: '\t', '\\': '\\', '"': '"' };
+          const next = text[j + 1];
+          s += escaped[next] ?? ('\\' + next);
+          j += 2; continue;
+        }
         s += text[j]; j++;
       }
       tokens.push({ t: 'str', v: s });

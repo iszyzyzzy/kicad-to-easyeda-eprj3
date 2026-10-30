@@ -33,7 +33,7 @@ const fs = require('fs');
 const path = require('path');
 const { parse: parseSex, nodeSymbol, extractPts } = require('./lib/kicad');
 const {
-  buildSymbolRecords, buildFootprintRecords, kicadToEprj3, flipY, flipRot,
+  buildSymbolRecords, buildFootprintRecords, pcbPolygonPath, kicadToEprj3, flipY, flipRot,
   kicadToSchUnit, flipYSch, circumcenter, arcSweep, mapStroke, mapFill
 } = require('./lib/kicad-to-eprj3');
 const { Project, uuid, randId, writeRecords, sheetDocRecords } = require('./lib/eprj3');
@@ -783,7 +783,9 @@ function convertPcb(srcFile, dst, pcb) {
   const libDocs = [];
   const usedFps = {};
   function ensureFootprintDoc(name, fpData) {
-    if (usedFps[name]) return usedFps[name];
+    // 同名封装可能有实例修改和底层镜像，不能仅按库名复用第一份几何。
+    const key = name + JSON.stringify(fpData);
+    if (usedFps[key]) return usedFps[key];
     const docUuid = uuid(16);
     const devUuid = uuid(16);
     // Library docs carry no instance nets — nets are wired per placement via PAD_NET.
@@ -791,8 +793,8 @@ function convertPcb(srcFile, dst, pcb) {
     const { records: fpRecs, pads } = buildFootprintRecords({ name, pads: anonymized.pads, shapes: anonymized.shapes, value: fpData.value });
     libDocs.push(docHead('FOOTPRINT', docUuid), metaRec(name), ...fpRecs);
     libDocs.push(docHead('DEVICE', devUuid), metaRec(name, { images: [], attributes: { Symbol: '', Footprint: docUuid } }));
-    usedFps[name] = { docUuid, devUuid, pads };
-    return usedFps[name];
+    usedFps[key] = { docUuid, devUuid, pads };
+    return usedFps[key];
   }
 
   // DOCHEAD + META + the static editor config block the client requires.
@@ -853,7 +855,7 @@ function convertPcb(srcFile, dst, pcb) {
       push('ARC', {
         ...pcbLineCommon, netName, layerId,
         startX: x1, startY: y1, endX: x2, endY: y2,
-        angle: r2(sweep), width: toMil(width)
+        angle: r2(sweep), arcType: 'DOT', width: toMil(width)
       });
     } else if (head === 'via') {
       const at = findSub(node, 'at');
@@ -888,7 +890,7 @@ function convertPcb(srcFile, dst, pcb) {
         if (!s || !e) continue;
         const width = strokeWidthOf(node, 0.15);
         if (isEdge) {
-          openSegments.push([toMil(s[0]), flipY(s[1]), toMil(e[0]), flipY(e[1])]);
+          openSegments.push([toMil(s[0]), flipY(s[1]), 'L', toMil(e[0]), flipY(e[1])]);
         } else {
           push('LINE', {
             ...pcbLineCommon, netName: '', layerId: layerToId(lname),
@@ -903,7 +905,7 @@ function convertPcb(srcFile, dst, pcb) {
         if (!s || !m || !e) { warn('gr_arc without start/mid/end'); continue; }
         const width = strokeWidthOf(node, 0.15);
         if (isEdge) {
-          outlinePaths.push(arcOutlinePath(s, m, e));
+          openSegments.push(arcOutlinePath(s, m, e));
         } else {
           const x1 = toMil(s[0]), y1 = flipY(s[1]);
           const mx = toMil(m[0]), my = flipY(m[1]);
@@ -912,7 +914,7 @@ function convertPcb(srcFile, dst, pcb) {
           push('ARC', {
             ...pcbLineCommon, netName: '', layerId: layerToId(lname),
             startX: x1, startY: y1, endX: x2, endY: y2,
-            angle: r2(sweep), width: toMil(width)
+            angle: r2(sweep), arcType: 'DOT', width: toMil(width)
           });
         }
       } else if (head === 'gr_rect') {
@@ -939,7 +941,8 @@ function convertPcb(srcFile, dst, pcb) {
         if (!pts || pts.length < 3) continue;
         const flat = [];
         for (const p of pts) flat.push(toMil(p.x), flipY(p.y));
-        const path = [...flat, flat[0], flat[1]];
+        const path = pcbPolygonPath(flat);
+        if (!path) continue;
         if (isEdge) outlinePaths.push(path);
         else push('POLY', { ...pcbLineCommon, netName: '', layerId: layerToId(lname), width: toMil(strokeWidthOf(node, 0.15)), path, polyType: 'NORMAL' });
       } else if (head === 'bezier') {
@@ -951,6 +954,16 @@ function convertPcb(srcFile, dst, pcb) {
           ...pcbLineCommon, netName: '', layerId: layerToId(lname), width: toMil(strokeWidthOf(node, 0.15)),
           path: [flat[0], flat[1], 'C', ...flat.slice(2)], polyType: 'NORMAL'
         });
+      }
+      if (!isEdge && ['solid', 'yes'].includes(findSub(node, 'fill')?.[0]) && ['gr_rect', 'gr_poly', 'gr_circle'].includes(head)) {
+        const rec = body.at(-1);
+        if (rec?.head.type === 'POLY') {
+          const path = rec.body.path;
+          rec.head.type = 'FILL';
+          delete rec.body.polyType;
+          Object.assign(rec.body, { fillStyle: 'SOLID', width: 0,
+            path: Array.isArray(path[0]) ? path : [path] });
+        }
       }
     } else if (head === 'gr_text') {
       const val = typeof node[1]?.v === 'string' ? node[1].v : '';
@@ -965,21 +978,23 @@ function convertPcb(srcFile, dst, pcb) {
     }
   }
 
-  // Stitch Edge.Cuts line segments into (closed where possible) outline polylines
+  // 直线和圆弧必须共同组成闭合轮廓，不能把每段强行闭合成板框。
   for (const chain of chainSegments(openSegments)) {
-    const closed = Math.abs(chain[0] - chain[chain.length - 2]) < 0.5 && Math.abs(chain[1] - chain[chain.length - 1]) < 0.5;
-    const path = closed ? chain : [...chain, chain[0], chain[1]];
-    outlinePaths.push(path);
+    const closed = Math.hypot(chain[0] - chain.at(-2), chain[1] - chain.at(-1)) < 0.01;
+    if (closed) outlinePaths.push(chain);
+    else {
+      warn('PCB 板框存在未闭合路径，保留为普通线条');
+      push('POLY', { ...pcbLineCommon, netName: '', layerId: 11, width: 10, path: chain, polyType: 'NORMAL' });
+    }
   }
   for (const path of outlinePaths) {
-    // Rectangular boards are written as the "R" descriptor in real exports.
     const outPath = rectDescriptor(path) || path;
     push('POLY', { ...pcbLineCommon, netName: '', layerId: 11, width: 10, path: outPath, polyType: 'BOARD_OUTLINE' });
   }
 
   // NET index records — the official head id is the JSON array ["NET",<name>]
   // and the default net "" has an empty payload.
-  const netRecords = [];
+  const netRecords = [{ head: { type: 'NET', ticket: nextTicket(), id: JSON.stringify(['NET', '']) }, body: null }];
   for (const netName of [...usedNets].sort()) {
     if (!netName) continue;
     netRecords.push({
@@ -1017,7 +1032,10 @@ function r2(v) { return Math.round(v * 100) / 100; }
 
 function netOf(node, netNames) {
   const netArr = findSub(node, 'net');
-  return netArr ? (netNames[netArr[0]] || '') : '';
+  // KiCad 10 直接存网络名；旧格式仍通过编号查表，数字名称用引号区分。
+  const netNode = findSubNode(node, 'net');
+  if (!netArr) return '';
+  return netNode[1]?.t === 'str' ? normNet(netArr[0]) : (netNames[netArr[0]] || normNet(netArr[1] || ''));
 }
 
 
@@ -1039,7 +1057,7 @@ function arcOutlinePath(s, m, e) {
   const mx = toMil(m[0]), my = flipY(m[1]);
   const x2 = toMil(e[0]), y2 = flipY(e[1]);
   const { sweep } = arcSweep(x1, y1, mx, my, x2, y2);
-  return [x1, y1, 'ARC', r2(sweep), x2, y2, x1, y1];
+  return [x1, y1, 'ARC', r2(sweep), x2, y2];
 }
 
 // gr_text → PCB STRING record body
@@ -1064,9 +1082,9 @@ function pcbString(node, val) {
     bold: font && findFlags(font, 'bold').length ? 1 : 0,
     italic: font && findFlags(font, 'italic').length ? 1 : 0,
     origin: `${h}_${v}`,
-    angle: flipRot(at && at[2] || 0),
+    angle: ((Number(at && at[2]) || 0) % 360 + 360) % 360,
     reverse: !!knockout, expansion: 0,
-    mirror: layerId === 2,
+    mirror: !!justify?.includes('mirror'),
     specialColor: null
   };
 }
@@ -1242,12 +1260,29 @@ function convertFootprint(node, ctx) {
   const fpLayer = layerArr ? layerArr[0] : 'F.Cu';
   const pads = extractPads(node);
   const shapes = extractFpShapes(node);
+  const rotation = Number(at?.[2]) || 0;
+  const back = fpLayer === 'B.Cu';
+  // KiCad 焊盘角度是绝对角度，中心坐标却是封装局部坐标。
+  // EasyEDA 底层实例执行镜像 X，再旋转 angle-180°；先还原为正面库几何。
+  const swapLayer = layer => layer?.replace(/^[FB]\./, c => c === 'F.' ? 'B.' : 'F.');
+  for (const pad of pads) {
+    pad.angle = (Number(pad.angle) - rotation) * (back ? -1 : 1);
+    if (back) {
+      pad.at[1] = -Number(pad.at[1]);
+      pad.layers = pad.layers.map(swapLayer);
+    }
+  }
+  if (back) for (const shape of shapes) {
+    shape.layer = swapLayer(shape.layer);
+    for (const key of ['y1', 'y2', 'cy', 'my']) if (shape[key] != null) shape[key] = -shape[key];
+    if (shape.pts) shape.pts = shape.pts.map(p => ({ x: p.x, y: -p.y }));
+  }
   const texts = extractFpTexts(node);
   const lib = ensureFootprintDoc(fpName, { pads, shapes, value: texts.Value || '' });
   for (const p of pads) { const n = normNet(p.netName); if (n) usedNets.add(n); }
 
   const compId = randId();
-  const compAngle = flipRot(at && at[2] || 0);
+  const compAngle = ((rotation % 360) + 360) % 360;
   const cx = toMil(at && at[0] || 0);
   const cy = flipY(at && at[1] || 0);
   const pinSwapInfo = {};
@@ -1265,7 +1300,35 @@ function convertFootprint(node, ctx) {
   body.push(pcbAttr(nextTicket(), compId, 'Footprint', lib.docUuid, null, null, false, compAngle, atTicket));
   body.push(pcbAttr(nextTicket(), compId, 'Device', lib.devUuid, null, null, false, compAngle, -1));
   const designator = texts.Reference || '';
-  if (designator) body.push(pcbAttr(nextTicket(), compId, 'Designator', designator, cx, cy, true, compAngle, atTicket));
+  const textNodes = node.slice(1).filter(n => Array.isArray(n) &&
+    (n[0].v === 'property' || n[0].v === 'fp_text'));
+  let hasDesignator = false;
+  for (const textNode of textNodes) {
+    const kind = textNode[1]?.v;
+    const isReference = kind === 'Reference' || kind === 'reference';
+    const value = textNode[2]?.v || '';
+    const hide = textNode.some(n => n?.v === 'hide') || findSub(textNode, 'hide')?.[0] === 'yes';
+    const layer = findSub(textNode, 'layer')?.[0];
+    const visible = !hide && !!layer;
+    const local = findSub(textNode, 'at') || [0, 0];
+    const rad = rotation * Math.PI / 180;
+    const x = cx + toMil(local[0]) * Math.cos(rad) + toMil(local[1]) * Math.sin(rad);
+    const y = cy + toMil(local[0]) * Math.sin(rad) - toMil(local[1]) * Math.cos(rad);
+    const text = pcbString(textNode, value.replace(/\$\{REFERENCE\}/g, designator));
+    Object.assign(text, { x, y });
+    // KiCad 默认保持封装文字正立，但不改变其放置位置。
+    if (!textNode.some(n => Array.isArray(n) && n[0]?.v === 'unlocked'))
+      text.angle = (text.angle + 90) % 180 - 90;
+    if (isReference) {
+      const rec = pcbAttr(nextTicket(), compId, 'Designator', designator, x, y, visible, text.angle, atTicket);
+      const { text: ignored, ...style } = text;
+      Object.assign(rec.body, style, { valueVisible: visible });
+      body.push(rec);
+      hasDesignator = true;
+    } else if (visible) push('STRING', text);
+  }
+  if (designator && !hasDesignator)
+    body.push(pcbAttr(nextTicket(), compId, 'Designator', designator, cx, cy, false, compAngle, atTicket));
   lib.pads.forEach((p, idx) => {
     const netName = normNet(pads[idx] && pads[idx].netName);
     if (!netName) return;
@@ -1290,27 +1353,22 @@ function pcbAttr(ticket, parentId, key, value, x, y, valueVisible, angle, zIndex
 }
 
 function chainSegments(segments) {
-  const EPS = 0.5; // mil
-  const near = (x1, y1, x2, y2) => Math.abs(x1 - x2) < EPS && Math.abs(y1 - y2) < EPS;
+  const near = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 0.01;
+  const reverse = s => s[2] === 'ARC'
+    ? [s[4], s[5], 'ARC', -s[3], s[0], s[1]]
+    : [s[3], s[4], 'L', s[0], s[1]];
   const remaining = segments.map(s => s.slice());
   const chains = [];
   while (remaining.length) {
-    const chain = remaining.shift();
-    let extended = true;
-    while (extended) {
-      extended = false;
-      for (let i = 0; i < remaining.length; i++) {
-        const s = remaining[i];
-        const headX = chain[chain.length - 2], headY = chain[chain.length - 1];
-        const tailX = chain[0], tailY = chain[1];
-        if (near(headX, headY, s[0], s[1])) { chain.push(s[2], s[3]); }
-        else if (near(headX, headY, s[2], s[3])) { chain.push(s[0], s[1]); }
-        else if (near(tailX, tailY, s[2], s[3])) { chain.unshift(s[0], s[1]); }
-        else if (near(tailX, tailY, s[0], s[1])) { chain.unshift(s[2], s[3]); }
-        else continue;
-        remaining.splice(i, 1);
-        extended = true;
-      }
+    let chain = remaining.shift();
+    // 只从尾部延伸；闭合环中任意一段都可以作为起点。
+    for (;;) {
+      const end = chain.slice(-2);
+      const i = remaining.findIndex(s => near(end, s.slice(0, 2)) || near(end, s.slice(-2)));
+      if (i < 0 || near(chain.slice(0, 2), end)) break;
+      let next = remaining.splice(i, 1)[0];
+      if (!near(end, next.slice(0, 2))) next = reverse(next);
+      chain.push(...next.slice(2));
     }
     chains.push(chain);
   }
@@ -1326,6 +1384,7 @@ function extractPads(node) {
       if (!Array.isArray(sub)) continue;
       const sh = sub[0].v;
       if (sh === 'at') { pad.at = sub.slice(1).map(x => x.v); if (pad.at.length > 2) pad.angle = parseFloat(pad.at[2]) || 0; }
+      else if (sh === 'roundrect_rratio') pad.roundrectRatio = Number(sub[1]?.v) || 0;
       else if (sh === 'size') pad.size = sub.slice(1).map(x => x.v);
       else if (sh === 'layers') pad.layers = sub.slice(1).map(x => x.v);
       else if (sh === 'drill') {
@@ -1334,7 +1393,7 @@ function extractPads(node) {
         pad.drill = nums[0];
         if (isOval && nums[1]) pad.drillOval = nums[1];
       }
-      else if (sh === 'net') pad.netName = sub[2]?.v || '';
+      else if (sh === 'net') pad.netName = sub[2]?.v || (sub[1]?.t === 'str' ? sub[1].v : '');
     }
     pads.push(pad);
   }
@@ -1355,7 +1414,7 @@ function extractFpShapes(node) {
         x1: xy ? +xy[0] : 0, y1: xy ? +xy[1] : 0,
         x2: xy2 ? +xy2[0] : 0, y2: xy2 ? +xy2[1] : 0,
         layer: layerArr ? layerArr[0] : 'F.SilkS',
-        width: strokeWidthOf(it, 0.15)
+        fill: ['solid', 'yes'].includes(findSub(it, 'fill')?.[0]), width: strokeWidthOf(it, 0.15)
       });
     } else if (h === 'fp_circle') {
       const c = findSub(it, 'center');
@@ -1363,15 +1422,15 @@ function extractFpShapes(node) {
       const layerArr = findSub(it, 'layer');
       if (!c || !e) continue;
       const r = Math.hypot(+e[0] - +c[0], +e[1] - +c[1]);
-      out.push({ kind: h, cx: +c[0], cy: +c[1], r, layer: layerArr ? layerArr[0] : 'F.SilkS', width: strokeWidthOf(it, 0.15) });
+      out.push({ kind: h, cx: +c[0], cy: +c[1], r, layer: layerArr ? layerArr[0] : 'F.SilkS', fill: ['solid', 'yes'].includes(findSub(it, 'fill')?.[0]), width: strokeWidthOf(it, 0.15) });
     } else if (h === 'fp_arc') {
       const a = require('./lib/kicad').extractArc(it);
       const layerArr = findSub(it, 'layer');
       if (a.mx == null) continue;
-      out.push({ kind: h, ...a, layer: layerArr ? layerArr[0] : 'F.SilkS', width: strokeWidthOf(it, 0.15) });
+      out.push({ kind: h, ...a, layer: layerArr ? layerArr[0] : 'F.SilkS', fill: ['solid', 'yes'].includes(findSub(it, 'fill')?.[0]), width: strokeWidthOf(it, 0.15) });
     } else if (h === 'fp_poly') {
       const layerArr = findSub(it, 'layer');
-      out.push({ kind: h, pts: extractPts(it), layer: layerArr ? layerArr[0] : 'F.SilkS', width: strokeWidthOf(it, 0.15) });
+      out.push({ kind: h, pts: extractPts(it), layer: layerArr ? layerArr[0] : 'F.SilkS', fill: ['solid', 'yes'].includes(findSub(it, 'fill')?.[0]), width: strokeWidthOf(it, 0.15) });
     }
   }
   return out;
