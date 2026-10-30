@@ -768,6 +768,73 @@ function layerToId(name) {
   return 1;
 }
 
+function pcbConfigFor(root) {
+  const config = structuredClone(PCB_CONFIG);
+  const table = findSubNode(root, 'layers');
+  const copper = new Set([1, 2]);
+  // 已声明但没有走线的内层同样属于板层，不能按图元数量推测层数。
+  if (table) for (const layer of table.slice(1)) {
+    if (Array.isArray(layer) && /^(F|B|In\d+)\.Cu$/.test(layer[1]?.v || ''))
+      copper.add(layerToId(layer[1].v));
+  }
+  if (!table) {
+    const visit = node => {
+      if (!Array.isArray(node)) return;
+      if (['layer', 'layers'].includes(node[0]?.v))
+        for (const token of node.slice(1))
+          if (/^In\d+\.Cu$/.test(token?.v || '')) copper.add(layerToId(token.v));
+      for (const child of node) if (Array.isArray(child)) visit(child);
+    };
+    visit(root);
+  }
+  for (const rec of config) if (rec.type === 'LAYER' && rec.body.layerId >= 15 && rec.body.layerId <= 46) {
+    rec.body.use = copper.has(rec.body.layerId);
+    rec.body.show = rec.body.use;
+  }
+
+  const setup = findSubNode(root, 'setup');
+  const stackup = setup && findSubNode(setup, 'stackup');
+  const physical = [];
+  let dielectric = 361;
+  const addPhys = (id, props) => physical.push({ type: 'LAYER_PHYS',
+    id: JSON.stringify(['LAYER_PHYS', id]), body: { material: '', thickness: 0,
+      permittivity: 0, lossTangent: 0, isKeepIsland: true, ...props, zIndex: physical.length + 1 } });
+  const addDielectric = id => {
+    const existing = config.find(r => r.type === 'LAYER' && r.body.layerId === id);
+    if (existing) { existing.body.use = true; return; }
+    const body = structuredClone(config.find(r => r.type === 'LAYER' && r.body.layerId === 361).body);
+    Object.assign(body, { layerId: id, layerName: `Dielectric${id - 360}`, use: true });
+    config.push({ type: 'LAYER', id: JSON.stringify(['LAYER', id]), body });
+  };
+  if (stackup) for (const layer of stackup.slice(1)) {
+    if (!Array.isArray(layer) || layer[0]?.v !== 'layer') continue;
+    const name = layer[1]?.v || '';
+    let id;
+    if (/^dielectric \d+$/.test(name)) { id = dielectric++; addDielectric(id); }
+    else if (LAYER_IDS[name] !== undefined || /^In\d+\.Cu$/.test(name)) id = layerToId(name);
+    else continue;
+    addPhys(id, { material: findSub(layer, 'material')?.[0] || '',
+      // LAYER_PHYS 使用 0.1 mm 单位，与图形坐标的 mil 不同。
+      thickness: Number(findSub(layer, 'thickness')?.[0] || 0) * 10,
+      permittivity: Number(findSub(layer, 'epsilon_r')?.[0] || 0),
+      lossTangent: Number(findSub(layer, 'loss_tangent')?.[0] || 0) });
+  }
+  if (!physical.length) {
+    const order = [1, ...[...copper].filter(id => id >= 15).sort((a, b) => a - b), 2];
+    const total = Number(findSub(findSubNode(root, 'general') || [], 'thickness')?.[0] || 1.6);
+    for (let i = 0; i < order.length; i++) {
+      addPhys(order[i], { thickness: 0.35 });
+      if (i < order.length - 1) {
+        const id = dielectric++;
+        addDielectric(id);
+        addPhys(id, { material: 'FR4', thickness: (total - order.length * 0.035) / (order.length - 1) * 10,
+          permittivity: 4.5 });
+      }
+    }
+  }
+  return [...config.filter(r => r.type !== 'LAYER_PHYS'), ...physical];
+}
+
 function convertPcb(srcFile, dst, pcb) {
   const root = parseSex(fs.readFileSync(srcFile, 'utf8'));
 
@@ -801,7 +868,7 @@ function convertPcb(srcFile, dst, pcb) {
   const docRecords = [
     docHead('PCB', pcb.uuid),
     { head: { type: 'META', ticket: 1, id: 'META' }, body: { title: pcb.title, parent: '', source: '', board: pcb.board, zIndex: null } },
-    ...PCB_CONFIG.map((r, i) => ({ head: { type: r.type, ticket: 2 + i, id: r.id }, body: r.body }))
+    ...pcbConfigFor(root).map((r, i) => ({ head: { type: r.type, ticket: 2 + i, id: r.id }, body: r.body }))
   ];
   let ticket = docRecords.length + 1;
   const body = [];
@@ -1190,9 +1257,8 @@ function convertZone(node, { netNames, usedNets, push }) {
     return;
   }
 
-  const netArr = findSub(node, 'net');
   const netNameArr = findSub(node, 'net_name');
-  const netName = normNet((netNameArr && netNameArr[0]) || (netArr ? (netNames[netArr[0]] || '') : ''));
+  const netName = normNet(netNameArr?.[0] || netOf(node, netNames));
   if (netName) usedNets.add(netName);
 
   if (!polys.length) { warn('zone without polygon'); return; }

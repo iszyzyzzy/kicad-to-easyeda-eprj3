@@ -37,12 +37,12 @@ const SCH_MAP = {
 };
 
 const PCB_MAP = {
-  CANVAS: 't-canvas', LAYER: 't-layer', ACTIVE_LAYER: 't-active-layer', NET: 't-net',
+  CANVAS: 't-canvas', LAYER: 't-layer-wire', LAYER_PHYS: 't-layer-phys', ACTIVE_LAYER: 't-active-layer', NET: 't-net',
   PARTITION: 't-partition', GROUP: 't-pcb-group', VIA: 't-pcb-via', PAD: 't-pcb-pad',
   LINE: 't-pcb-line', ARC: 't-pcb-arc', OBJ: 't-pcb-obj', POLY: 't-pcb-poly',
   FILL: 't-pcb-fill', REGION: 't-pcb-region', POUR: 't-pcb-pour', POURED: 't-pcb-poured',
   IMAGE: 't-pcb-image', STRING: 't-pcb-string',
-  COMPONENT: 't-pcb-component', PAD_NET: 't-pad-net', ATTR: 't-pcb-attr',
+  COMPONENT: 'tm-pcb-component', PAD_NET: 't-pad-net-wire', ATTR: 't-pcb-attr',
   BOARD: 't-pcb-board', PART: 't-part'
 };
 // DIMENSION is excluded: the official schema (type/coords/text/textFollow) does not
@@ -57,6 +57,7 @@ function loosen(type, body) {
   if (type === 'STRING') {
     if (typeof b.bold === 'number') b.bold = !!b.bold;         // app writes 0/1
     if (typeof b.italic === 'number') b.italic = !!b.italic;
+    if (b.specialColor == null) b.specialColor = '';
   }
   if (type === 'ATTR' && b.groupID != null) {                  // pcb ATTR uses "groupID" in real exports
     if (b.groupId == null) b.groupId = String(b.groupID);
@@ -98,9 +99,6 @@ function loosen(type, body) {
     if (b.padId == null) b.padId = '';
     if (b.padLen == null) b.padLen = 0;
     if (b.propagationDelay == null) b.propagationDelay = 0;
-  }
-  if (type === 'POUR' && b.pourType && typeof b.pourType.pourType === 'string') {
-    b.pourType = { pourType: {} };                             // schema wants an object where the app writes 'SOLID'
   }
   if (type === 'PIN' && b.color == null) b.color = '';         // official exports write null; schema only allows ""
   if (type === 'WIRE' || type === 'BUS') {
@@ -147,9 +145,11 @@ function main() {
       let map = fixedMap;
       if (!map) {
         if (rec.type === 'DOCHEAD') docType = rec.body.docType;
-        map = docType === 'SYMBOL' ? SCH_MAP : docType === 'FOOTPRINT' ? PCB_MAP : null;
+        map = docType === 'SYMBOL' ? SCH_MAP : ['FOOTPRINT', 'PCB'].includes(docType) ? PCB_MAP : null;
         if (!map) { skipped++; continue; }
       }
+      // 空 NET 只声明默认网络索引，不是缺少字段的网络属性载荷。
+      if (rec.type === 'NET' && rec.head.id === JSON.stringify(['NET', ''])) { skipped++; continue; }
       const schemaKey = map[rec.type];
       if (!schemaKey) { skipped++; continue; }
       const r = validateFormat(schemaKey, loosen(rec.type, rec.body));

@@ -13,6 +13,18 @@ try {
   const dst = path.join(tmp, 'output');
   fs.mkdirSync(src);
   fs.writeFileSync(path.join(src, 'board.kicad_pcb'), String.raw`(kicad_pcb (version 20260206)
+    (layers (0 "F.Cu" signal) (4 "In1.Cu" signal) (6 "In2.Cu" signal) (2 "B.Cu" signal))
+    (setup (stackup
+      (layer "F.Cu" (type "copper") (thickness 0.035))
+      (layer "dielectric 1" (type "prepreg") (thickness 0.1) (material "FR4") (epsilon_r 4.5))
+      (layer "In1.Cu" (type "copper") (thickness 0.035))
+      (layer "dielectric 2" (type "core") (thickness 1.24) (material "FR4"))
+      (layer "In2.Cu" (type "copper") (thickness 0.035))
+      (layer "dielectric 3" (type "prepreg") (thickness 0.1) (material "FR4"))
+      (layer "B.Cu" (type "copper") (thickness 0.035))))
+    (segment (start 1 2) (end 3 4) (width 0.25) (layer "In1.Cu") (net "GND"))
+    (zone (net "GND") (layers "In1.Cu" "In2.Cu")
+      (polygon (pts (xy 0 0) (xy 10 0) (xy 10 10) (xy 0 10))))
     (footprint "SAME" (layer "F.Cu") (at 10 20 90)
       (property "Reference" "U1" (at 2 3 90) (layer "F.SilkS")
         (effects (font (size 1 1) (thickness 0.1))))
@@ -64,7 +76,17 @@ try {
   assert.ok(main.some(r => r.type === 'FILL' && r.body.layerId === 4 && r.body.fillStyle === 'SOLID'));
   const text = main.find(r => r.type === 'STRING' && r.body.text === 'A\nB').body;
   assert.equal(text.mirror, true); close(text.angle, 90);
-  console.log('PCB 保真回归检查通过：旋转、局部焊盘角度、底层镜像、位号位置/隐藏、实心图形、换行。');
+  for (const id of [15, 16]) {
+    const layer = main.find(r => r.type === 'LAYER' && r.body.layerId === id).body;
+    assert.equal(layer.use, true); assert.equal(layer.show, true);
+    assert.ok(main.some(r => r.type === 'POUR' && r.body.layerId === id && r.body.netName === 'GND'));
+  }
+  assert.equal(main.find(r => r.type === 'LAYER' && r.body.layerId === 17).body.use, false);
+  const stack = main.filter(r => r.type === 'LAYER_PHYS').sort((a, b) => a.body.zIndex - b.body.zIndex);
+  assert.deepEqual(stack.map(r => JSON.parse(r.id)[1]), [1, 361, 15, 362, 16, 363, 2]);
+  close(stack[0].body.thickness, 0.35); close(stack[3].body.thickness, 12.4);
+  assert.ok(main.some(r => r.type === 'LINE' && r.body.layerId === 15 && r.body.netName === 'GND'));
+  console.log('PCB 保真回归检查通过：旋转、丝印、填充、四层叠层和新版多层铺铜网络。');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
