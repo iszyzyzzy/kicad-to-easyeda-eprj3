@@ -28,7 +28,12 @@ try {
     (footprint "SAME" (layer "F.Cu") (at 10 20 90)
       (property "Reference" "U1" (at 2 3 90) (layer "F.SilkS")
         (effects (font (size 1 1) (thickness 0.1))))
-      (pad "1" smd rect (at 1 2 120) (size 2 1) (layers "F.Cu") (net "GND")))
+      (pad "" smd roundrect (at 1 2 120) (size 1 0.5) (layers "F.Paste") (roundrect_rratio 0.2))
+      (pad "1" smd rect (at 1 2 120) (size 2 1) (layers "F.Cu") (net "GND"))
+      (pad "" smd rect (at -1 -2 90) (size 1 1) (layers "F.Mask"))
+      (pad "2" smd rect (at -1 -2 90) (size 2 1) (layers "F.Cu") (net "VCC"))
+      (pad "3" smd rect (at 3 4 90) (size 1 1) (layers "F.Cu") (net "unconnected-(U1-Pad3)"))
+      (pad "4" smd rect (at 5 6 90) (size 1 1) (layers "F.Cu")))
     (footprint "SAME" (layer "F.Cu") (at 30 40 -90)
       (property "Reference" "U2" (at 2 3 90) (layer "F.SilkS") (hide yes))
       (pad "1" smd rect (at 1 2 -60) (size 2 1) (layers "F.Cu") (net "GND")))
@@ -86,7 +91,19 @@ try {
   assert.deepEqual(stack.map(r => JSON.parse(r.id)[1]), [1, 361, 15, 362, 16, 363, 2]);
   close(stack[0].body.thickness, 0.35); close(stack[3].body.thickness, 12.4);
   assert.ok(main.some(r => r.type === 'LINE' && r.body.layerId === 15 && r.body.netName === 'GND'));
-  console.log('PCB 保真回归检查通过：旋转、丝印、填充、四层叠层和新版多层铺铜网络。');
+  const u1 = main.find(r => r.type === 'COMPONENT' && r.body.attrs['Unique ID'] === 'U1');
+  const u1lib = docs.find(d => d.head.uuid === attrs.find(r => r.body.parentId === u1.id && r.body.key === 'Footprint').body.value);
+  const realPads = u1lib.records.filter(r => r.type === 'PAD');
+  assert.equal(realPads.length, 4);
+  assert.ok(u1lib.records.some(r => r.type === 'FILL' && r.body.layerId === 7));
+  assert.ok(u1lib.records.some(r => r.type === 'FILL' && r.body.layerId === 5));
+  for (const [num, net] of [['1', 'GND'], ['2', 'VCC'], ['3', 'unconnected-(U1-Pad3)'], ['4', '']]) {
+    const pad = realPads.find(r => r.body.num === num);
+    const binding = main.find(r => r.type === 'PAD_NET' && r.id === JSON.stringify(['PAD_NET', u1.id, num, pad.id]));
+    assert.equal(binding.body.padNet, net);
+    assert.ok(pad.body.topPasteExpansion < 0);
+  }
+  console.log('PCB 保真回归检查通过：旋转、丝印、四层叠层、铺铜和非铜开口/焊盘网络索引。');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }

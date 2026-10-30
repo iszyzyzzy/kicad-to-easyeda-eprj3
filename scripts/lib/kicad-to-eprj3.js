@@ -391,6 +391,9 @@ function footprintPadRecord(pad, opts = {}) {
   const [x, y] = pad.at && pad.at.length >= 2 ? pad.at : [0, 0];
   const [w, h] = pad.size && pad.size.length >= 2 ? pad.size : [1, 1];
   const shape = PAD_SHAPE_MAP[pad.shape] || 'RECT';
+  const layers = pad.layers || [];
+  const opening = (side, kind, fallback) => layers.includes(`${side}.${kind}`) || layers.includes(`*.${kind}`)
+    ? fallback : -Math.min(kicadToEprj3(+w), kicadToEprj3(+h)) / 2;
   return {
     head: { type: 'PAD', ticket: opts.ticket, id: opts.id },
     body: {
@@ -403,13 +406,44 @@ function footprintPadRecord(pad, opts = {}) {
       relativeAngle: 0,
       plated: (pad.type || 'smd') !== 'np_thru_hole',
       padType: 'NORMAL',
-      topSolderExpansion: 2, bottomSolderExpansion: 2,
-      topPasteExpansion: 0, bottomPasteExpansion: 0,
+      topSolderExpansion: opening('F', 'Mask', 2), bottomSolderExpansion: opening('B', 'Mask', 2),
+      topPasteExpansion: opening('F', 'Paste', 0), bottomPasteExpansion: opening('B', 'Paste', 0),
       connectMode: null, spokeSpace: null, spokeWidth: null, spokeAngle: null,
       unusedInnerLayers: [], padLen: 0, attrsMap: {}, propagationDelay: 0,
       locked: false, zIndex: opts.zIndex
     }
   };
+}
+
+function nonCopperPadRecords(pad, ticket) {
+  const layers = { 'F.Paste': 7, 'B.Paste': 8, 'F.Mask': 5, 'B.Mask': 6 };
+  const [x, y] = pad.at;
+  const [w, h] = pad.size.map(Number).map(kicadToEprj3);
+  const cx = kicadToEprj3(+x), cy = flipY(+y);
+  const angle = (Number(pad.angle) || 0) * Math.PI / 180;
+  const point = (px, py) => [cx + px * Math.cos(angle) - py * Math.sin(angle),
+    cy + px * Math.sin(angle) + py * Math.cos(angle)];
+  const radius = Math.min(w, h) * (pad.roundrectRatio || 0);
+  let path;
+  if (pad.shape === 'circle') path = ['CIRCLE', cx, cy, w / 2];
+  else if (pad.shape === 'oval') {
+    const r = Math.min(w, h) / 2;
+    const vertical = h > w;
+    const local = vertical
+      ? [[-r, (h-w)/2], [-r, -(h-w)/2], [r, -(h-w)/2], [r, (h-w)/2]]
+      : [[-(w-h)/2, r], [(w-h)/2, r], [(w-h)/2, -r], [-(w-h)/2, -r]];
+    const p = local.map(p => point(...p));
+    const sweep = vertical ? 180 : -180;
+    path = [...p[0], 'L', ...p[1], 'ARC', sweep, ...p[2], 'L', ...p[3], 'ARC', sweep, ...p[0]];
+  } else {
+    const topLeft = point(-w / 2, h / 2);
+    path = ['R', ...topLeft, w, h, Number(pad.angle) || 0, radius];
+  }
+  return (pad.layers || []).filter(l => layers[l]).map((l, i) => ({
+    head: { type: 'FILL', ticket: ticket + i, id: 'e' + randId() },
+    body: { groupId: 0, netName: '', layerId: layers[l], width: 0, fillStyle: 'SOLID',
+      path: [path], locked: false, zIndex: ticket + i }
+  }));
 }
 
 // 重复顶点会生成零长度线段，客户端为其建立空间索引时会抛出空图元异常。
@@ -544,10 +578,17 @@ function buildFootprintRecords(kicadFp, opts = {}) {
     }
   }
 
-  for (const pad of kicadFp.pads) {
+  for (const [sourceIndex, pad] of kicadFp.pads.entries()) {
+    // 钢网/阻焊开口没有铜和电气引脚，不能作为额外 PAD 导入。
+    if (!pad.layers?.some(l => /\.Cu$/.test(l)) && !(pad.type || '').includes('thru_hole')) {
+      const apertures = nonCopperPadRecords(pad, ticket + 1);
+      records.push(...apertures);
+      ticket += apertures.length;
+      continue;
+    }
     ticket++;
     const padId = 'e' + randId();
-    padIds.push({ num: pad.number || '', id: padId });
+    padIds.push({ num: pad.number || '', id: padId, sourceIndex });
     records.push(footprintPadRecord(pad, { ticket, id: padId, zIndex: ticket }));
   }
 

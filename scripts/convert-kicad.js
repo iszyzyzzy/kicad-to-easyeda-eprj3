@@ -1087,11 +1087,9 @@ function convertPcb(srcFile, dst, pcb) {
   writeRecords(dst, [...libDocs, ...ordered]);
 }
 
-// KiCad escapes '/' in net names as {slash}; unconnected-(...) placeholders
-// mean the pad has no net yet (EasyEDA models those with net '').
+// 保留 KiCad 为未连接引脚生成的独立网络名，避免同号引脚的网络身份被合并。
 function normNet(name) {
   if (!name) return '';
-  if (/^unconnected-\(/.test(name)) return '';
   return name.replace(/\{slash\}/g, '/');
 }
 
@@ -1395,9 +1393,8 @@ function convertFootprint(node, ctx) {
   }
   if (designator && !hasDesignator)
     body.push(pcbAttr(nextTicket(), compId, 'Designator', designator, cx, cy, false, compAngle, atTicket));
-  lib.pads.forEach((p, idx) => {
-    const netName = normNet(pads[idx] && pads[idx].netName);
-    if (!netName) return;
+  lib.pads.forEach(p => {
+    const netName = normNet(pads[p.sourceIndex]?.netName);
     body.push({
       head: { type: 'PAD_NET', ticket: nextTicket(), id: JSON.stringify(['PAD_NET', compId, p.num, p.id]) },
       body: { partitionId: '', padNet: netName, padLen: null, propagationDelay: null, attrsMap: {} }
