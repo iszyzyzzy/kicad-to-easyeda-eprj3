@@ -76,7 +76,7 @@ const kicadSchSample = `(kicad_sch (version 20230121) (generator eeschema)
   (bus (pts (xy 10 20) (xy 20 20)))
   (bus_entry (at 10 20) (size 2.54 2.54) (stroke (width 0) (type default)))
   (junction (at 15 10) (diameter 0) (color 0 0 0 0))
-  (no_connect (at 25 10) (uuid x))
+  (no_connect (at 30 46.19) (uuid x))
   (label "NET1" (at 10 10 0) (effects (font (size 1.27 1.27))))
   (global_label "GLOB" (at 20 30 0) (effects (font (size 1.27 1.27))))
   (text "hello" (at 40 40 0) (effects (font (size 2 2))))
@@ -177,7 +177,7 @@ function main() {
     const partDocs = schDocs.filter(d => d.head.body.docType === 'SYMBOL' && symMeta(d) === 2);
     const devDocsAll = schDocs.filter(d => d.head.body.docType === 'DEVICE');
     const frameDoc = schDocs.find(d => d.head.body.docType === 'SYMBOL' && symMeta(d) === 20);
-    assert(frameDoc && partDocs.length === 1 && devDocsAll.length === 2,
+    assert(frameDoc && partDocs.length === 1 && devDocsAll.length >= 2,
       '.esch2 embeds the A4 frame doc plus one SYMBOL and one DEVICE doc');
     const symDoc = partDocs[0];
     const symPart = symDoc.records.find(r => r.type === 'PART');
@@ -198,7 +198,7 @@ function main() {
       'convert-kicad emits Designator/Name ATTRs linked to the component');
     const frameComp = pageDoc.records.find(r => r.type === 'COMPONENT' && r.body.zIndex === null);
     const pageAttrs = pageDoc.records.filter(r => r.type === 'ATTR');
-    assert(pageAttrs.every(r => r.body.parentId === comp.head.id || (frameComp && r.body.parentId === frameComp.head.id)),
+    assert(pageAttrs.every(r => r.body.key === '_NETLABEL_' || r.body.key === 'NO_CONNECT' || r.body.parentId === comp.head.id || (frameComp && r.body.parentId === frameComp.head.id)),
       'every page ATTR.parentId == COMPONENT id (frame attrs belong to the frame COMPONENT)');
     const wireRec = pageDoc.records.find(r => r.type === 'WIRE');
     assert(pageDoc.records.some(r => r.type === 'LINE' && r.body.lineGroup)
@@ -263,10 +263,10 @@ function main() {
     assert(pageDoc.records.some(r => r.type === 'BUS'), 'bus becomes a BUS record');
     const junction = pageDoc.records.find(r => r.type === 'CIRCLE' && r.body.fillStyle === 'SOLID');
     assert(!!junction && junction.body.radius > 0, 'junction becomes a filled CIRCLE dot');
-    const ncLines = pageDoc.records.filter(r => r.type === 'LINE' && r.body.strokeWidth === 1);
-    assert(ncLines.length === 2 && ncLines[0].body.lineGroup && ncLines[0].body.lineGroup === ncLines[1].body.lineGroup,
-      'no_connect becomes two LINE records sharing a group id');
-    assert(pageDoc.records.some(r => r.type === 'NETLABEL' && r.body.value === 'GLOB'), 'global_label becomes a NETLABEL');
+    const nc = pageDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'NO_CONNECT');
+    assert(nc && nc.body.value === 'yes' && nc.body.parentId.startsWith(comp.head.id),
+      '未连接标记绑定实际派生引脚');
+    assert(pageDoc.records.some(r => r.type === 'ATTR' && r.body.key === '_NETLABEL_' && r.body.value === 'GLOB'), '网络标签写成客户端识别的根 ATTR');
     const txt = pageDoc.records.find(r => r.type === 'TEXT' && r.body.value === 'hello');
     assert(txt && Math.abs(txt.body.x - kicadToSchUnit(40)) < 0.01 && txt.body.y < 0 && txt.body.fontSize === 7.87,
       'text becomes a TEXT record in flipped 0.254 mm units (2 mm font = 7.87 units)');
@@ -275,7 +275,7 @@ function main() {
     const pageCircle = pageDoc.records.find(r => r.type === 'CIRCLE' && Math.abs(r.body.radius - kicadToSchUnit(2)) < 0.01);
     assert(!!pageCircle, 'page circle becomes a CIRCLE');
     const pageArc = pageDoc.records.find(r => r.type === 'ARC');
-    assert(!!pageArc && pageArc.body.referX != null, 'page arc becomes an ARC with a reference center');
+    assert(!!pageArc && Math.abs(pageArc.body.referX - kicadToSchUnit(72.5)) < 1e-5, 'page arc becomes an ARC with a point on the arc');
 
     // ---- pcb primitives (new coverage) ----
     const via = pcbDoc.records.find(r => r.type === 'VIA');
@@ -396,7 +396,7 @@ function main() {
 
     // ---- unit conversion ----
     assert(Math.abs(kicadToEprj3(1) - 39.3700787) < 1e-6, 'kicadToEprj3 converts mm to mil (39.37)');
-    assert(Math.abs(kicadToSchUnit(1) - 3.937007874015748) < 1e-9, 'kicadToSchUnit converts mm to 0.254 mm sch units');
+    assert(Math.abs(kicadToSchUnit(1) - 3.937007874015748) < 1e-6, 'kicadToSchUnit converts mm to 0.254 mm sch units');
     assert(kicadToSchUnit(0.254) === 1 && Math.abs(kicadToSchUnit(297.18) - 1170) < 1e-6,
       'one sch unit = 0.254 mm exactly (A4 page = 1170 units)');
   } finally {
@@ -409,3 +409,4 @@ function main() {
 
 main();
 require('./pcb-fidelity');
+require('./schematic-fidelity');

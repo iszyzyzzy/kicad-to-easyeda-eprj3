@@ -121,10 +121,16 @@ function nodeSymbol(node) {
         if (!Array.isArray(sub) || !sub.length) continue;
         if (sub[0].v === 'name') {
           pin.name = sub[1]?.v;
+          const effects = sub.find(n => Array.isArray(n) && n[0]?.v === 'effects');
+          const font = effects?.find(n => Array.isArray(n) && n[0]?.v === 'font');
+          pin.nameSize = Number(font?.find(n => Array.isArray(n) && n[0]?.v === 'size')?.[1]?.v) || 1.27;
           pin.nameHide = sub.some(x => Array.isArray(x) && x[0]?.v === 'hide' && x[1]?.v === 'yes');
         }
         else if (sub[0].v === 'number') {
           pin.number = sub[1]?.v;
+          const effects = sub.find(n => Array.isArray(n) && n[0]?.v === 'effects');
+          const font = effects?.find(n => Array.isArray(n) && n[0]?.v === 'font');
+          pin.numberSize = Number(font?.find(n => Array.isArray(n) && n[0]?.v === 'size')?.[1]?.v) || 1.27;
           pin.numberHide = sub.some(x => Array.isArray(x) && x[0]?.v === 'hide' && x[1]?.v === 'yes');
         }
         else if (sub[0].v === 'at') {
@@ -257,6 +263,7 @@ function extractPads(node) {
       if (!Array.isArray(sub)) continue;
       const sh = sub[0].v;
       if (sh === 'at') { pad.at = sub.slice(1).map(x => x.v); if (pad.at.length > 2) pad.angle = parseFloat(pad.at[2]) || 0; }
+      else if (sh === 'roundrect_rratio') pad.roundrectRatio = Number(sub[1]?.v) || 0;
       else if (sh === 'size') pad.size = sub.slice(1).map(x => x.v);
       else if (sh === 'layers') pad.layers = sub.slice(1).map(x => x.v);
       else if (sh === 'drill') {
@@ -339,39 +346,11 @@ function extractFootprintNode(node) {
 }
 
 function parseFootprintFile(path) {
-  const text = fs.readFileSync(path, 'utf8');
-  const root = parse(text);
-  // root = (kicad_pcb ... (footprint "x" ...))
-  const fp = { name: '', pads: [], shapes: [], courtyard: null };
-  for (const node of root.slice(1)) {
-    if (Array.isArray(node) && node[0].v === 'footprint') {
-      fp.name = node[1].v;
-      for (let i = 2; i < node.length; i++) {
-        const it = node[i];
-        if (!Array.isArray(it)) continue;
-        const h = it[0].v;
-        if (h === 'pad') {
-          // (pad "<num>" <smd|thru_hole|np_thru_hole> <rect|circle|oval|roundrect|custom> ...)
-          const pad = { number: it[1].v, type: it[2]?.v, shape: it[3]?.v, at: [], size: [], layers: [] };
-          for (let j = 1; j < it.length; j++) {
-            const sub = it[j];
-            if (!Array.isArray(sub)) continue;
-            const sh = sub[0].v;
-            if (sh === 'at') pad.at = sub.slice(1).map(x => x.v);
-            else if (sh === 'size') pad.size = sub.slice(1).map(x => x.v);
-            else if (sh === 'layers') pad.layers = sub.slice(1).map(x => x.v);
-            else if (sh === 'drill') pad.drill = sub[1]?.v;
-            else if (sh === 'net') { pad.netNum = sub[1]?.v; pad.netName = sub[2]?.v || ''; }
-          }
-          fp.pads.push(pad);
-        } else if (h === 'fp_line' || h === 'fp_rect' || h === 'fp_circle' || h === 'fp_arc') {
-          fp.shapes.push({ kind: h, ...extractXY(it) });
-        }
-      }
-      break;
-    }
-  }
-  return fp;
+  const root = parse(fs.readFileSync(path, 'utf8'));
+  // 独立 .kicad_mod 的根就是封装；板文件则从子节点查找。
+  const node = ['footprint', 'module'].includes(root[0]?.v) ? root
+    : root.find(n => Array.isArray(n) && n[0]?.v === 'footprint');
+  return node ? extractFootprintNode(node) : { name: '', pads: [], shapes: [] };
 }
 
 module.exports = {

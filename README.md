@@ -95,12 +95,12 @@ Wrote DeviceLED.elibz2: 596 symbols, 167 footprints (636245 bytes)
 | `wire` | `WIRE` + 多条共享 `lineGroup` 的 `LINE` |
 | `bus` / `bus_entry` | `BUS` + `LINE` / `BUSENTRY` |
 | `junction` | 填充 `CIRCLE`（电气节点） |
-| `no_connect` | 两条 `LINE`（X 标记） |
-| `label` / `global_label` / `hierarchical_label` | `NETLABEL` |
+| `no_connect` | 派生引脚上的 `NO_CONNECT` 属性（保留电气含义） |
+| `label` / `global_label` / `hierarchical_label` | 根 `ATTR`（`_NETLABEL_`） |
 | `text` / `text_box` | `TEXT`（+ `RECT` 边框） |
-| `polyline` / `rectangle` / `circle` / `arc` / `bezier` | `POLY` / `RECT` / `CIRCLE` / `ARC`（三点求圆心）/ `BEZIER`，stroke/fill 样式同步映射 |
+| `polyline` / `rectangle` / `circle` / `arc` / `bezier` | `POLY` / `RECT` / `CIRCLE` / `ARC`（起点/弧上中点/终点）/ `BEZIER`，stroke/fill 样式同步映射 |
 | `image` | `OBJ`（base64 内嵌） |
-| `sheet`（层次图） | `RECT` + 名称 `TEXT` + 引脚 `NETLABEL` |
+| `sheet`（层次图） | `RECT` + 名称 `TEXT` + 引脚 根 `ATTR`（`_NETLABEL_`） |
 | 引脚电气/图形类型 | `PIN.electric` / `PIN.pinShape` 数值映射 |
 | `footprint`（含 `pad`） | `.epcb2` 内嵌 `FOOTPRINT` 文档段（`PART`/`PAD`/丝印图形）+ `DEVICE` 文档段 + `COMPONENT` 放置 + `Designator`/`Footprint`/`Device` `ATTR` |
 | pad 网络 / 椭圆孔 | `PAD_NET`（绑定元件引脚）+ `NET` 索引记录 / `holeType ROUND` 宽高 |
@@ -175,3 +175,7 @@ node test/validate-format.js <生成的 .esch2|.epcb2|.elibu> <sch|pcb|lib>
 ## License
 
 [Apache-2.0](LICENSE)
+
+### 原理图和槽孔保真
+
+原理图坐标统一到六位小数，图纸偏移保持格点对齐；旋转后镜像的引脚、属性文字的隐藏/角度/字号和零长度电源引脚均保留。封装优先复用 PCB 中的定义，未使用的封装从 `fp-lib-table`（支持 `${KIPRJMOD}` 和环境变量）、项目 `.pretty` 目录或本机 KiCad 标准库查找；找不到时输出警告。槽孔使用 `SLOT`，同时保留槽长、孔径与长轴方向。

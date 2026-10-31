@@ -18,9 +18,9 @@
  *
  * Primitive coverage (per KiCad file-format docs → EasyEDA file-format docs):
  *   Schematic: wire→WIRE+LINE, bus→BUS+LINE, bus_entry→BUSENTRY, junction→CIRCLE,
- *     no_connect→LINE×2, label/global_label/hierarchical_label→NETLABEL,
+ *     no_connect→引脚 NO_CONNECT ATTR, label/global_label/hierarchical_label→_NETLABEL_ ATTR,
  *     text/text_box→TEXT(+RECT), polyline/rectangle/circle/arc/bezier→POLY/RECT/
- *     CIRCLE/ARC/BEZIER, image→OBJ, hierarchical sheet→RECT+TEXT+NETLABEL,
+ *     CIRCLE/ARC/BEZIER, image→OBJ, hierarchical sheet→RECT+TEXT+ATTR,
  *     symbol→COMPONENT(+ATTR)
  *   PCB: segment→LINE (copper track), arc(track)→ARC, via→VIA, footprint→FOOTPRINT doc
  *     + COMPONENT + PAD_NET, gr_line→LINE, gr_arc→ARC, gr_rect/gr_poly/gr_circle/
@@ -107,6 +107,58 @@ async function main() {
   const project = await Project.create(dst, projectName);
   console.log(`Created eprj3 project at ${dst}`);
 
+  // 先创建原理图所属的板卡，PCB 和原理图才能共享同一个 board。
+  const schematicFiles = fs.readdirSync(src).filter(f => f.endsWith('.kicad_sch'));
+  if (schematicFiles.length) project.ensureSchematic('Schematic1');
+
+  // Walk PCBs
+  const pcbs = fs.readdirSync(src).filter(f => f.endsWith('.kicad_pcb'));
+  let pcbIdx = 1;
+  const footprintLibrary = new Map();
+  const footprintDocs = [];
+  for (const pcbFile of pcbs) {
+    const pcb = project.ensurePcb(`PCB${pcbIdx++}`);
+    const file = project.pcbFile(pcb);
+    const converted = convertPcb(path.join(src, pcbFile), file, pcb);
+    footprintDocs.push(...converted.docs);
+    for (const fp of converted.footprints) if (!footprintLibrary.has(fp.name)) footprintLibrary.set(fp.name, fp);
+    project.save();
+    console.log(`  pcb: ${pcbFile} -> ${file}`);
+  }
+
+  // PCB 未使用的封装从项目库或本机 KiCad 库读取，不能以空 UUID 冒充绑定。
+  const roots = [src, path.join(src, 'footprints'), ...Object.entries(process.env)
+    .filter(([k]) => /^KICAD\d+_FOOTPRINT_DIR$/.test(k)).map(([, v]) => v)];
+  if (process.platform === 'win32') {
+    const base = path.join(process.env.ProgramFiles || 'C:/Program Files', 'KiCad');
+    if (fs.existsSync(base)) for (const ver of fs.readdirSync(base)) roots.push(path.join(base, ver, 'share/kicad/footprints'));
+  } else roots.push('/usr/share/kicad/footprints', '/usr/local/share/kicad/footprints');
+  const libraryPaths = new Map();
+  const tableFile = path.join(src, 'fp-lib-table');
+  if (fs.existsSync(tableFile)) {
+    const table = parseSex(fs.readFileSync(tableFile, 'utf8'));
+    for (const lib of table.filter(n => Array.isArray(n) && n[0].v === 'lib')) {
+      const uri = findChildValue(lib, 'uri')?.replace(/\$\{([^}]+)\}/g, (_, key) => key === 'KIPRJMOD' ? src : process.env[key] || '');
+      if (uri) libraryPaths.set(findChildValue(lib, 'name'), path.resolve(src, uri));
+    }
+  }
+  for (const schFile of schematicFiles) {
+    const root = parseSex(fs.readFileSync(path.join(src, schFile), 'utf8'));
+    for (const n of root.filter(n => Array.isArray(n) && n[0].v === 'symbol')) {
+      const name = collectProperties(n).Footprint;
+      if (!name || footprintLibrary.has(name)) continue;
+      const [library, item] = name.split(':');
+      const candidates = roots.map(dir => path.join(dir, library + '.pretty', item + '.kicad_mod'));
+      if (libraryPaths.has(library)) candidates.unshift(path.join(libraryPaths.get(library), item + '.kicad_mod'));
+      const file = candidates.find(f => fs.existsSync(f));
+      if (!file) { warn(`找不到原理图封装库：${name}`); continue; }
+      const fp = require('./lib/kicad').parseFootprintFile(file);
+      const docUuid = uuid(16), built = buildFootprintRecords(fp);
+      footprintDocs.push(docHead('FOOTPRINT', docUuid), metaRec(name), ...built.records);
+      footprintLibrary.set(name, { name, docUuid });
+    }
+  }
+
   // Walk schematics
   const schs = fs.readdirSync(src).filter(f => f.endsWith('.kicad_sch'));
   let schIdx = 1;
@@ -114,20 +166,9 @@ async function main() {
     const sch = project.ensureSchematic(`Schematic${schIdx++}`);
     const sheet = project.ensureSheet(sch, 'P1');
     const file = project.sheetFile(sheet);
-    convertSchematic(path.join(src, schFile), file, sch, sheet, { projectName, pageCount: schs.length });
+    convertSchematic(path.join(src, schFile), file, sch, sheet, { projectName, pageCount: schs.length, footprintLibrary, footprintDocs });
     project.save();
     console.log(`  sch: ${schFile} -> ${file}`);
-  }
-
-  // Walk PCBs
-  const pcbs = fs.readdirSync(src).filter(f => f.endsWith('.kicad_pcb'));
-  let pcbIdx = 1;
-  for (const pcbFile of pcbs) {
-    const pcb = project.ensurePcb(`PCB${pcbIdx++}`);
-    const file = project.pcbFile(pcb);
-    convertPcb(path.join(src, pcbFile), file, pcb);
-    project.save();
-    console.log(`  pcb: ${pcbFile} -> ${file}`);
   }
 
   if (warnCounter > 30) console.warn(`  warn: ... ${warnCounter} warnings total`);
@@ -139,7 +180,8 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
   const root = parseSex(fs.readFileSync(srcFile, 'utf8'));
 
   const paper = findChildValue(root, 'paper') || 'A4';
-  const pageH = PAGE_HEIGHT_UNITS[paper] || PAGE_HEIGHT_UNITS.A4;
+  // 保持图纸偏移落在 50 mil 格点上，不能让整张图离格。
+  const pageH = Math.round((PAGE_HEIGHT_UNITS[paper] || PAGE_HEIGHT_UNITS.A4) / 5) * 5;
   if (!PAGE_HEIGHT_UNITS[paper]) warn(`unknown paper "${paper}", using A4 page height`);
   const pageCount = opts.pageCount || 1;
 
@@ -221,13 +263,15 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
           : { Symbol: symDocUuid, SymbolName: JSON.stringify({ name, uuid: symDocUuid, source: '' }) }
       })
     );
-    usedLibs[libId] = { symDocUuid, devUuid, partId, name, isPower, netName, nameOff };
+    usedLibs[libId] = { symDocUuid, devUuid, partId, name, isPower, netName, nameOff, records: symRecs };
     return usedLibs[libId];
   }
 
   const pageRecords = sheetDocRecords(sch, sheet); // DOCHEAD SCH_PAGE + META + CANVAS
   let ticket = 2;
   let busEntryOrder = 0;
+  const noConnects = [];
+  const placedPins = [];
   let componentZ = 0; // placed components need a real zIndex (official exports use 1,2,3…)
   const rec = (type, body, id) => {
     ticket++;
@@ -240,10 +284,10 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
 
     if (head === 'wire' || head === 'bus') {
       // Official structure: the WIRE/BUS head id IS the shared lineGroup id of
-      // its LINE children; the WIRE body carries only the zIndex.
+      // its LINE children.
       const groupId = randId();
       ticket++;
-      pageRecords.push({ head: { type: head === 'wire' ? 'WIRE' : 'BUS', ticket, id: groupId }, body: { zIndex: ticket } });
+      pageRecords.push({ head: { type: head === 'wire' ? 'WIRE' : 'BUS', ticket, id: groupId }, body: { groupId: '', locked: false, zIndex: ticket } });
       const pts = extractWirePoints(node);
       for (let i = 0; i < pts.length - 1; i++) {
         ticket++;
@@ -281,22 +325,13 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     } else if (head === 'no_connect') {
       const [x, y] = findAtXY(node);
       const cx = toSch(x), cy = pageY(y);
-      const h = 2.5; // half diagonal of the X marker (sch units = 0.635 mm)
-      const ncGroup = randId();
-      for (const [dx, dy] of [[h, h], [h, -h]]) {
-        rec('LINE', {
-          fillColor: null, fillStyle: null, strokeColor: null, strokeStyle: null, strokeWidth: 1,
-          startX: cx - dx, startY: cy - dy, endX: cx + dx, endY: cy + dy, lineGroup: ncGroup
-        });
-      }
+      noConnects.push([cx, cy]);
     } else if (head === 'label' || head === 'global_label' || head === 'hierarchical_label') {
       const [x, y] = findAtXY(node);
       const val = findValue(node);
-      ticket++;
-      pageRecords.push({
-        head: { type: 'NETLABEL', ticket, id: randId() },
-        body: { x: toSch(x), y: pageY(y), color: '#FF0000', fontFamily: 'Arial', fontSize: 5, align: 'CENTER_MIDDLE', value: val, locked: false, zIndex: ticket }
-      });
+      const fx = textEffects(node);
+      const rot = findAtXY(node)[2] || 0;
+      pageRecords.push(pageAttr('', ++ticket, '_NETLABEL_', val, toSch(x), pageY(y), fx.align || 'LEFT_BOTTOM', { rotation: rot, fontSize: fx.size || 5 }));
     } else if (head === 'text' || head === 'text_box') {
       const [x, y, rot] = findAtXY(node);
       const val = findValue(node);
@@ -325,7 +360,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         body: {
           groupId: '', x: toSch(x), y: pageY(y), rotation: ((rot || 0) % 360 + 360) % 360, color: null, fontFamily: null,
           fontSize: fx.size || 5, fontWeight: fx.bold || null, italic: fx.italic || null,
-          underline: null, strikeout: null, align: fx.align, value: val, fillColor: null,
+          underline: null, strikeout: null, align: fx.align || 'CENTER_MIDDLE', value: val, fillColor: null,
           locked: false, zIndex: ticket
         }
       });
@@ -357,9 +392,8 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       const cx1 = toSch(a.x1), cy1 = pageY(a.y1);
       const cxm = toSch(a.mx), cym = pageY(a.my);
       const cx2 = toSch(a.x2), cy2 = pageY(a.y2);
-      const c = circumcenter(cx1, cy1, cxm, cym, cx2, cy2);
       rec('ARC', shapeCommon(node, {
-        startX: cx1, startY: cy1, referX: c.x, referY: c.y, endX: cx2, endY: cy2
+        startX: cx1, startY: cy1, referX: cxm, referY: cym, endX: cx2, endY: cy2
       }));
     } else if (head === 'bezier') {
       const pts = extractWirePoints(node);
@@ -398,18 +432,31 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       // flip = isMirror + 180°. Sheet angles are CCW-on-screen like eprj3 — no flip.
       let isMirror = mirrors.includes('y');
       let rotation = (((rot || 0) % 360) + 360) % 360;
-      if (mirrors.includes('x')) { isMirror = true; rotation = (rotation + 180) % 360; }
+      // KiCad 镜像发生在图纸坐标系，旋转与镜像不能交换顺序。
+      if (mirrors.length) rotation = (360 - rotation) % 360;
+      if (mirrors.includes('x')) { isMirror = !isMirror; rotation = (rotation + 180) % 360; }
       const compId = randId();
       const compX = toSch(x), compY = pageY(y);
+      const rad = rotation * Math.PI / 180;
+      for (const pin of lib.records.filter(r => r.head.type === 'PIN')) {
+        const px = pin.body.x * (isMirror ? -1 : 1), py = pin.body.y;
+        placedPins.push({ id: compId + pin.head.id,
+          x: Math.round((compX + px * Math.cos(rad) + py * Math.sin(rad)) * 1e6) / 1e6,
+          y: Math.round((compY - px * Math.sin(rad) + py * Math.cos(rad)) * 1e6) / 1e6 });
+      }
+
       // KiCad property positions are absolute page coords — reuse them so
       // Designator/Name land exactly where KiCad drew them (user issue: big ICs
       // overlapped a fixed +10/+10 offset).
       const propPos = {};
+      const propStyles = {};
       for (const it of node.slice(1)) {
         if (!(Array.isArray(it) && it[0].v === 'property')) continue;
         const at = findSub(it, 'at');
         if (at && at.length >= 2 && /^[\d.-]+$/.test(String(at[0])) && /^[\d.-]+$/.test(String(at[1]))) {
           propPos[it[1]?.v] = [toSch(at[0]), pageY(at[1])];
+          const fx = textEffects(it), eff = findSubNode(it, 'effects') || [];
+          propStyles[it[1]?.v] = { rotation: Number(at[2]) || 0, fontSize: fx.size, align: fx.align || 'CENTER_MIDDLE', valueVisible: !(findFlags(eff, 'hide').includes('yes') || eff.some(n => !Array.isArray(n) && n.v === 'hide')), fontWeight: fx.bold, italic: fx.italic };
         }
       }
       ticket++;
@@ -451,9 +498,9 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         // otherwise just right of the origin like official exports.
         const [dsgX, dsgY] = propPos.Reference || [compX + 10, compY];
         const [valX, valY] = propPos.Value || [compX + 10, compY + 10];
-        if (props.Reference) pageRecords.push(pageAttr(compId, ++ticket, 'Designator', props.Reference, dsgX, dsgY, null, { fontSize: null }));
-        pageRecords.push(pageLinkAttr(compId, ++ticket, 'Footprint', ''));
-        if (props.Value) pageRecords.push(pageAttr(compId, ++ticket, 'Name', props.Value, valX, valY, null, { fontSize: null }));
+        if (props.Reference) pageRecords.push(pageAttr(compId, ++ticket, 'Designator', props.Reference, dsgX, dsgY, null, propStyles.Reference || { fontSize: null }));
+        pageRecords.push(pageLinkAttr(compId, ++ticket, 'Footprint', opts.footprintLibrary?.get(props.Footprint)?.docUuid || ''));
+        if (props.Value) pageRecords.push(pageAttr(compId, ++ticket, 'Name', props.Value, valX, valY, null, propStyles.Value || { fontSize: null }));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Reuse Block', ''));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Group ID', ''));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Channel ID', ''));
@@ -461,6 +508,12 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     } else if (!['lib_symbols', 'uuid', 'paper', 'title_block', 'version', 'generator', 'generator_version', 'junction', 'at', 'instances', 'path', 'sheet_instances', 'embedded_fonts'].includes(head)) {
       warn(`schematic: unhandled "${head}" skipped`);
     }
+  }
+
+  for (const [x, y] of noConnects) {
+    const pin = placedPins.find(p => Math.abs(p.x - x) < 1e-5 && Math.abs(p.y - y) < 1e-5);
+    if (pin) pageRecords.push(pageAttr(pin.id, ++ticket, 'NO_CONNECT', 'yes', x, y, null, { valueVisible: false }));
+    else warn(`未连接标记未找到引脚：${x}, ${y}`);
   }
 
   // Sheet frame (docType 20 "Drawing-Symbol_A4"): the app renders the border
@@ -514,7 +567,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
 
   writeRecords(dst, [
     ...FRAME_TEMPLATE.symbol, ...FRAME_TEMPLATE.device,
-    ...libDocs, ...pageRecords
+    ...(opts.footprintDocs || []), ...libDocs, ...pageRecords
   ]);
 }
 
@@ -529,16 +582,13 @@ function drawKicadFrame(rec, paper, pageH, f) {
   const X = mm => toSch(mm);
   const Y = mm => flipYSch(mm, pageH);
   const LW = 0.59; // KiCad default 0.15 mm stroke
-  // Every real LINE belongs to a WIRE group record ("所属的导线或总线组 id");
-  // lines whose group record is missing are dropped by the client.
-  const line = (x1, y1, x2, y2) => {
-    const gid = randId();
-    rec('WIRE', {}, gid);
-    rec('LINE', {
-      fillColor: '', fillStyle: 'NONE', strokeColor: null, strokeStyle: 'SOLID', strokeWidth: LW,
-      startX: X(x1), startY: Y(y1), endX: X(x2), endY: Y(y2), lineGroup: gid
-    });
-  };
+  // 图框是装饰图形，不能编码成电气导线，否则 DRC 会报游离网络。
+  const line = (x1, y1, x2, y2) => rec('POLY', {
+    groupId: '', locked: false, fillColor: '', fillStyle: 'NONE',
+    strokeColor: null, strokeStyle: 'SOLID', strokeWidth: LW,
+    points: [{ x: X(x1), y: Y(y1) }, { x: X(x2), y: Y(y2) }],
+    closed: false, startShape: 'NONE', endShape: 'NONE'
+  });
   const text = (value, xmm, ymm, fontSize, opts = {}) => {
     if (!value) return;
     rec('TEXT', {
@@ -634,7 +684,8 @@ function convertHierSheet(node, rec, pageY) {
       const pinName = it[1]?.v || '';
       const atSub = findSub(it, 'at');
       if (!atSub) continue;
-      rec('NETLABEL', {
+      rec('ATTR', {
+        key: '_NETLABEL_', parentId: '', keyVisible: false, valueVisible: true, groupId: '', rotation: 0,
         x: toSch(atSub[0]), y: pageY(atSub[1]), color: '#0000FF', fontFamily: 'Arial',
         fontSize: 5, align: 'CENTER_MIDDLE', value: pinName, locked: false
       });
@@ -860,7 +911,7 @@ function convertPcb(srcFile, dst, pcb) {
     const { records: fpRecs, pads } = buildFootprintRecords({ name, pads: anonymized.pads, shapes: anonymized.shapes, value: fpData.value });
     libDocs.push(docHead('FOOTPRINT', docUuid), metaRec(name), ...fpRecs);
     libDocs.push(docHead('DEVICE', devUuid), metaRec(name, { images: [], attributes: { Symbol: '', Footprint: docUuid } }));
-    usedFps[key] = { docUuid, devUuid, pads };
+    usedFps[key] = { name, docUuid, devUuid, pads };
     return usedFps[key];
   }
 
@@ -1085,6 +1136,7 @@ function convertPcb(srcFile, dst, pcb) {
     rec.head.ticket = ++t;
   }
   writeRecords(dst, [...libDocs, ...ordered]);
+  return { docs: libDocs, footprints: Object.values(usedFps) };
 }
 
 // 保留 KiCad 为未连接引脚生成的独立网络名，避免同号引脚的网络身份被合并。

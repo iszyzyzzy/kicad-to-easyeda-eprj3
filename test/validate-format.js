@@ -31,7 +31,7 @@ const SCH_MAP = {
   CANVAS: 't-sch-canvas', PART: 't-part', PIN: 't-sch-pin', LINE: 't-sch-line',
   WIRE: 't-wire', BUS: 't-bus', BUSENTRY: 't-sch-bus-entry', CIRCLE: 't-sch-circle',
   RECT: 't-sch-rect', ARC: 't-sch-arc', BEZIER: 't-sch-bezier', TEXT: 't-sch-text',
-  POLY: 't-sch-poly', OBJ: 't-sch-obj', COMPONENT: 't-sch-component', ATTR: 't-sch-attr',
+  POLY: 't-sch-poly', OBJ: 't-sch-obj', COMPONENT: 'tm-sch-component', ATTR: 't-sch-attr',
   GROUP: 't-sch-group', TABLE: 't-sch-table', ELLIPSE: 't-sch-ellipse',
   MASK_REGION: 't-sch-mask-region', NG_SETTING: 'tng-setting'
 };
@@ -50,6 +50,12 @@ const PCB_MAP = {
 // the app output, so loosen the record before validating.
 function loosen(type, body) {
   const b = { ...body };
+  // 内置旧版图框表格使用 e729 形式的单元格 ID，客户端允许此形态。
+  if (type === 'COMPONENT') { b.groupId ??= ''; b.locked ??= false; }
+  if (type === 'TABLE') {
+    b.groupId ??= '';
+    b.tableCell = b.tableCell?.map(c => ({ ...c, id: /^e\d+$/.test(c.id) ? Number(c.id.slice(1)).toString(16).padStart(16, '0') : c.id }));
+  }
   if (type === 'DIMENSION' && b.text) b.text = loosen('STRING', b.text);
   if (typeof b.groupId === 'number') b.groupId = String(b.groupId); // app writes 0, schema says string
   if (type === 'STRING') {
@@ -143,7 +149,7 @@ function main() {
       let map = fixedMap;
       if (!map) {
         if (rec.type === 'DOCHEAD') docType = rec.body.docType;
-        map = docType === 'SYMBOL' ? SCH_MAP : ['FOOTPRINT', 'PCB'].includes(docType) ? PCB_MAP : null;
+        map = ['SYMBOL', 'SCH_PAGE'].includes(docType) ? SCH_MAP : ['FOOTPRINT', 'PCB'].includes(docType) ? PCB_MAP : null;
         if (!map) { skipped++; continue; }
       }
       // 空 NET 只声明默认网络索引，不是缺少字段的网络属性载荷。

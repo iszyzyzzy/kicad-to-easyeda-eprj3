@@ -24,7 +24,7 @@ function flipY(val) {
 // KiCad symbol libraries are Y-up; eprj3 schematic records are Y-DOWN in
 // 0.254 mm units — so y is negated, x only rescaled.
 function kicadToSchUnit(val) {
-  return val * MM_TO_SCH;
+  return Math.round(val * MM_TO_SCH * 1e6) / 1e6;
 }
 function schX(val) {
   return kicadToSchUnit(val);
@@ -36,7 +36,7 @@ function schY(val) {
 // KiCad sheet coordinates (Y-down, origin top-left) → eprj3 schematic page
 // (Y-down, origin bottom-left of the frame): y_page = sch(ky) − pageHeight.
 function flipYSch(val, pageHeight) {
-  return kicadToSchUnit(val) - (pageHeight || 825);
+  return Math.round((kicadToSchUnit(val) - (pageHeight || 825)) * 1e6) / 1e6;
 }
 
 // Mirrored rotation sense caused by a Y flip (PCB path only; schematic angles
@@ -244,15 +244,13 @@ function buildSymbolRecords(kicadSym, opts = {}) {
         body: { ...common, centerX: schX(sh.cx), centerY: schY(sh.cy), radius: schX(sh.r) }
       });
     } else if (sh.type === 'ARC' && sh.mx != null) {
-      // KiCad arc: start/mid/end. eprj3 ARC: start/refer(center)/end.
-      // Mirror the three points into record space, then recompute the center.
-      const c = circumcenter(schX(sh.x1), schY(sh.y1), schX(sh.mx), schY(sh.my), schX(sh.x2), schY(sh.y2));
+      // refer 是圆弧上的中间点，不是圆心。
       records.push({
         head: { type: 'ARC', ticket, id: 'e' + randId() },
         body: {
           ...common,
           startX: schX(sh.x1), startY: schY(sh.y1),
-          referX: c.x, referY: c.y,
+          referX: schX(sh.mx), referY: schY(sh.my),
           endX: schX(sh.x2), endY: schY(sh.y2)
         }
       });
@@ -268,10 +266,8 @@ function buildSymbolRecords(kicadSym, opts = {}) {
     const pinId = 'e' + randId();
     ticket++;
     const rotation = ((pin.rotation || 0) % 360 + 360) % 360;
-    // Power flags carry length 0 in KiCad (wire meets the graphics at the pin
-    // origin); stretch the pin to the farthest graphic so the wire lands on it.
-    const graphicExtent = opts.isPower ? pinGraphicExtent(kicadSym, pin) : 0;
-    const length = pin.length > 0 ? schX(pin.length) : (graphicExtent > 0 ? graphicExtent : schX(2.54));
+    // 零长度引脚不能拉长，否则会改变符号外形。
+    const length = schX(pin.length || 0);
     const pinName = pin.name && pin.name !== '~' ? pin.name : (opts.isPower ? 'Pin' + (pin.number || '1') : '');
     records.push({
       head: { type: 'PIN', ticket, id: pinId },
@@ -322,11 +318,11 @@ function buildSymbolRecords(kicadSym, opts = {}) {
     const boolStyles = true;
     pinAttr('Pin Name', pinName, {
       visible: nameVisible, x: r2(endX + dir.x * 3), y: r2(endY + dir.y * 3),
-      rotation: textRotation, align: nameAlign, fontSize: 9.72222
+      rotation: textRotation, align: nameAlign, fontSize: schX(pin.nameSize || 1.27)
     });
     pinAttr('Pin Number', pin.number || '', {
       visible: numberVisible, x: r2(endX - dir.x * numOff), y: r2(endY - dir.y * numOff),
-      rotation: textRotation, align: numAlign, fontSize: 9.72222
+      rotation: textRotation, align: numAlign, fontSize: schX(pin.numberSize || 1.27)
     });
     pinAttr('Pin Type', PIN_TYPE_NAME[electric] || 'Undefined', {
       visible: false, x: null, y: null, rotation: 0, align: 'LEFT_BOTTOM', fontSize: null
@@ -384,7 +380,7 @@ function footprintPadHole(pad) {
   // oval drills store their second diameter in drillOval
   const w = pad.drillOval ? Math.max(d, parseFloat(pad.drillOval) || d) : d;
   const h = pad.drillOval ? Math.min(d, parseFloat(pad.drillOval) || d) : d;
-  return { holeType: 'ROUND', width: kicadToEprj3(w), height: kicadToEprj3(h), cornerRadius: 0 };
+  return { holeType: pad.drillOval ? 'SLOT' : 'ROUND', width: kicadToEprj3(w), height: kicadToEprj3(h), cornerRadius: 0 };
 }
 
 function footprintPadRecord(pad, opts = {}) {
@@ -403,7 +399,8 @@ function footprintPadRecord(pad, opts = {}) {
       defaultPad: { padType: shape, width: kicadToEprj3(parseFloat(w)), height: kicadToEprj3(parseFloat(h)), radius: shape === 'RECT' ? Math.min(kicadToEprj3(+w), kicadToEprj3(+h)) * (pad.roundrectRatio || 0) : 0 },
       specialPad: [],
       padOffsetX: 0, padOffsetY: 0,
-      relativeAngle: 0,
+      // KiCad 第二个直径更大时，槽孔长轴沿 Y。
+      relativeAngle: Number(pad.drillOval) > Number(pad.drill) ? 90 : 0,
       plated: (pad.type || 'smd') !== 'np_thru_hole',
       padType: 'NORMAL',
       topSolderExpansion: opening('F', 'Mask', 2), bottomSolderExpansion: opening('B', 'Mask', 2),
