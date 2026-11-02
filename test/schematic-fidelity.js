@@ -55,6 +55,14 @@ try {
   assert.equal(records.find(r => r.type === 'ATTR' && r.body.key === 'Pin Name').body.fontSize, 5);
   const component = records.find(r => r.type === 'COMPONENT' && r.body.partId === 'TEST.1');
   assert.ok(component.body.y % 5 === 0);
+  assert.equal(component.body.rotation, 270, '镜像 x 与原始 90 度在客户端使用 270 度');
+  // 按客户端顺序先旋转再镜像，验证端点确实落在 NC 与导线上。
+  const pin = records.find(r => r.type === 'PIN').body;
+  const rad = component.body.rotation * Math.PI / 180;
+  const pinX = component.body.x - (pin.x * Math.cos(rad) + pin.y * Math.sin(rad));
+  const pinY = component.body.y - pin.x * Math.sin(rad) + pin.y * Math.cos(rad);
+  assert.ok(Math.abs(pinX - nc.body.x) < 1e-6 && Math.abs(pinY - nc.body.y) < 1e-6);
+
   console.log('原理图与槽孔回归通过：镜像、格点、网络标签、NC、属性样式、库映射和槽孔轴向。');
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });

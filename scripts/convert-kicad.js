@@ -470,7 +470,8 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         head: { type: 'COMPONENT', ticket, id: compId },
         body: {
           partId: lib.partId,
-          x: compX, y: compY, rotation, isMirror,
+          // 客户端先旋转再镜像；本地几何计算采用先镜像再旋转。
+          x: compX, y: compY, rotation: isMirror ? (360 - rotation) % 360 : rotation, isMirror,
           attrs: lib.isPower
             ? { Footprints: '[]', Devices: '[]', DeviceName: null, FootprintName: null }
             : {
@@ -482,17 +483,31 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         }
       });
       if (lib.isPower) {
-        // Power flags bind through Symbol/Device and carry the net name in
-        // Name + Global Net Name, positioned like the symbol-doc attr offsets.
-        // Official exports leave kv/vv null here; visibility comes from the
-        // symbol doc's own Name attr.
+        // 电源的显示名称与电气网络名分开绑定，名称位置由符号朝向决定。
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Symbol', lib.symDocUuid));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Device', lib.devUuid));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Relevance', '[]'));
-        const off = lib.nameOff || { x: 0, y: -10, align: 'CENTER_BOTTOM' };
-        const [nameX, nameY] = propPos.Value || [compX + off.x, compY + off.y];
-        const style = propStyles.Value || { fontSize: 5, align: off.align };
-        pageRecords.push(pageAttr(compId, ++ticket, 'Name', props.Value || lib.netName || lib.name, nameX, nameY, style.align, style));
+        // 名称跟随实际符号方向，放在图形外侧，不沿用可能落在导线上的字段偏移。
+        const coords = [];
+        for (const r of lib.records) {
+          const b = r.body;
+          if (r.head.type === 'POLY') coords.push(...b.points);
+          else if (r.head.type === 'RECT') coords.push({ x: b.dotX1, y: b.dotY1 }, { x: b.dotX2, y: b.dotY2 });
+          else if (r.head.type === 'CIRCLE') coords.push({ x: b.centerX - b.radius, y: b.centerY - b.radius }, { x: b.centerX + b.radius, y: b.centerY + b.radius });
+        }
+        const world = coords.map(p => {
+          const x = p.x * (isMirror ? -1 : 1), y = p.y;
+          return { x: x * Math.cos(rad) + y * Math.sin(rad), y: -x * Math.sin(rad) + y * Math.cos(rad) };
+        });
+        const xs = world.map(p => p.x), ys = world.map(p => p.y);
+        const minX = Math.min(0, ...xs), maxX = Math.max(0, ...xs), minY = Math.min(0, ...ys), maxY = Math.max(0, ...ys);
+        const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+        const horizontal = Math.abs(cx) > Math.abs(cy);
+        const nameX = compX + (horizontal ? (cx > 0 ? maxX + 3 : minX - 3) : 0);
+        const nameY = compY + (horizontal ? 0 : (cy > 0 ? maxY + 3 : minY - 3));
+        const align = horizontal ? (cx > 0 ? 'LEFT_MIDDLE' : 'RIGHT_MIDDLE') : (cy > 0 ? 'CENTER_TOP' : 'CENTER_BOTTOM');
+        pageRecords.push(pageAttr(compId, ++ticket, 'Name', props.Value || lib.netName || lib.name,
+          nameX, nameY, align, { ...propStyles.Value, rotation: 0, align, fontSize: propStyles.Value?.fontSize || 5 }));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Global Net Name', props.Value || lib.netName || lib.name));
       } else {
         // Binding ATTRs, as in official app exports: EasyEDA resolves the placed
