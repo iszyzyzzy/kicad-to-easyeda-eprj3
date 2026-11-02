@@ -33,17 +33,25 @@ try {
       (property "Footprint" "alias:SLOT"))
     (wire (pts (xy 25.4 27.94) (xy 25.4 30.48)))
     (no_connect (at 25.4 27.94))
+    (wire (pts (xy 27.94 50.8) (xy 27.94 53.34)))
+    (global_label "EDGE" (at 25.4 50.8 0) (effects (font (size 1.27 1.27))))
     (label "SIG" (at 25.4 30.48 90) (effects (font (size 1.27 1.27)))))`);
   const dst = path.join(tmp, 'out');
   execFileSync(process.execPath, [path.resolve(__dirname, '../scripts/convert-kicad.js'), 'convert', tmp, dst]);
   const records = readRecords(path.join(dst, 'sch/Schematic1/P1.esch2'));
+  const edge = records.find(r => r.type === 'ATTR' && r.body.key === 'NET' && r.body.value === 'EDGE');
+  const stub = records.find(r => r.type === 'LINE' && r.body.lineGroup === edge.body.parentId);
+  assert.equal(stub.body.endX - stub.body.startX, 5, '引线避开 100 mil 外的邻近导线');
   const nc = records.find(r => r.type === 'ATTR' && r.body.key === 'NO_CONNECT');
   assert.ok(nc?.body.parentId);
-  assert.equal(records.filter(r => r.type === 'WIRE').length, 1, '图框不能产生电气网络');
+  assert.equal(records.find(r => r.type === 'ATTR' && r.body.key === 'Designator' && r.body.value === 'J1').body.rotation, 0, '属性角度叠加器件旋转后保持可读');
+  const net = records.find(r => r.type === 'ATTR' && r.body.key === 'NET');
+  assert.ok(records.some(r => r.type === 'WIRE' && r.id === net.body.parentId), '网络名必须绑定真实导线组');
+  assert.equal(records.filter(r => r.type === 'WIRE').length, 3, '图框不能产生电气网络');
   assert.equal(records.find(r => r.type === 'ATTR' && r.body.key === 'Designator' && r.body.value === 'J1').body.valueVisible, false);
   assert.equal(records.find(r => r.type === 'ATTR' && r.body.key === 'Name' && r.body.value === 'V').body.valueVisible, true);
   assert.ok(records.find(r => r.type === 'ATTR' && r.body.key === 'Footprint')?.body.value);
-  assert.equal(records.find(r => r.type === 'ATTR' && r.body.key === '_NETLABEL_').body.rotation, 90);
+  assert.equal(records.find(r => r.type === 'ATTR' && r.body.key === 'NET').body.rotation, 90);
   assert.equal(records.find(r => r.type === 'ATTR' && r.body.key === 'Pin Name').body.fontSize, 5);
   const component = records.find(r => r.type === 'COMPONENT' && r.body.partId === 'TEST.1');
   assert.ok(component.body.y % 5 === 0);

@@ -271,6 +271,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
   let ticket = 2;
   let busEntryOrder = 0;
   const noConnects = [];
+  const netLabels = [];
   const placedPins = [];
   let componentZ = 0; // placed components need a real zIndex (official exports use 1,2,3…)
   const rec = (type, body, id) => {
@@ -331,7 +332,7 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       const val = findValue(node);
       const fx = textEffects(node);
       const rot = findAtXY(node)[2] || 0;
-      pageRecords.push(pageAttr('', ++ticket, '_NETLABEL_', val, toSch(x), pageY(y), fx.align || 'LEFT_BOTTOM', { rotation: rot, fontSize: fx.size || 5 }));
+      netLabels.push({ x: toSch(x), y: pageY(y), value: val, rotation: Number(rot), size: fx.size || 5 });
     } else if (head === 'text' || head === 'text_box') {
       const [x, y, rot] = findAtXY(node);
       const val = findValue(node);
@@ -440,7 +441,11 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
       const rad = rotation * Math.PI / 180;
       for (const pin of lib.records.filter(r => r.head.type === 'PIN')) {
         const px = pin.body.x * (isMirror ? -1 : 1), py = pin.body.y;
+        const pinRad = pin.body.rotation * Math.PI / 180;
+        const dx = -Math.cos(pinRad) * (isMirror ? -1 : 1), dy = Math.sin(pinRad);
         placedPins.push({ id: compId + pin.head.id,
+          dx: Math.round(dx * Math.cos(rad) + dy * Math.sin(rad)),
+          dy: Math.round(-dx * Math.sin(rad) + dy * Math.cos(rad)),
           x: Math.round((compX + px * Math.cos(rad) + py * Math.sin(rad)) * 1e6) / 1e6,
           y: Math.round((compY - px * Math.sin(rad) + py * Math.cos(rad)) * 1e6) / 1e6 });
       }
@@ -456,7 +461,8 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         if (at && at.length >= 2 && /^[\d.-]+$/.test(String(at[0])) && /^[\d.-]+$/.test(String(at[1]))) {
           propPos[it[1]?.v] = [toSch(at[0]), pageY(at[1])];
           const fx = textEffects(it), eff = findSubNode(it, 'effects') || [];
-          propStyles[it[1]?.v] = { rotation: Number(at[2]) || 0, fontSize: fx.size, align: fx.align || 'CENTER_MIDDLE', valueVisible: !(findFlags(eff, 'hide').includes('yes') || eff.some(n => !Array.isArray(n) && n.v === 'hide')), fontWeight: fx.bold, italic: fx.italic };
+          propStyles[it[1]?.v] = { // KiCad 属性位置已经是图纸坐标，但角度仍需叠加符号旋转。
+            rotation: ((Number(at[2]) + Number(rot || 0)) % 180 + 180) % 180, fontSize: fx.size, align: fx.align || 'CENTER_MIDDLE', valueVisible: !(findChildValue(it, 'hide') === 'yes' || findFlags(eff, 'hide').includes('yes') || eff.some(n => !Array.isArray(n) && n.v === 'hide')), fontWeight: fx.bold, italic: fx.italic };
         }
       }
       ticket++;
@@ -480,13 +486,14 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
         // Name + Global Net Name, positioned like the symbol-doc attr offsets.
         // Official exports leave kv/vv null here; visibility comes from the
         // symbol doc's own Name attr.
-        const powerVis = { fontSize: null, keyVisible: null, valueVisible: null };
-        pageRecords.push(pageAttr(compId, ++ticket, 'Symbol', lib.symDocUuid, compX, compY + 30, null, powerVis));
+        pageRecords.push(pageLinkAttr(compId, ++ticket, 'Symbol', lib.symDocUuid));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Device', lib.devUuid));
         pageRecords.push(pageLinkAttr(compId, ++ticket, 'Relevance', '[]'));
         const off = lib.nameOff || { x: 0, y: -10, align: 'CENTER_BOTTOM' };
-        pageRecords.push(pageAttr(compId, ++ticket, 'Name', lib.netName || props.Value || lib.name, compX + off.x, compY + off.y, off.align, powerVis));
-        pageRecords.push(pageAttr(compId, ++ticket, 'Global Net Name', lib.netName || props.Value || lib.name, compX + off.x, compY + off.y, off.align, powerVis));
+        const [nameX, nameY] = propPos.Value || [compX + off.x, compY + off.y];
+        const style = propStyles.Value || { fontSize: 5, align: off.align };
+        pageRecords.push(pageAttr(compId, ++ticket, 'Name', props.Value || lib.netName || lib.name, nameX, nameY, style.align, style));
+        pageRecords.push(pageLinkAttr(compId, ++ticket, 'Global Net Name', props.Value || lib.netName || lib.name));
       } else {
         // Binding ATTRs, as in official app exports: EasyEDA resolves the placed
         // symbol through them (Symbol = SYMBOL doc uuid, Device = DEVICE doc uuid);
@@ -508,6 +515,47 @@ function convertSchematic(srcFile, dst, sch, sheet, opts = {}) {
     } else if (!['lib_symbols', 'uuid', 'paper', 'title_block', 'version', 'generator', 'generator_version', 'junction', 'at', 'instances', 'path', 'sheet_instances', 'embedded_fonts'].includes(head)) {
       warn(`schematic: unhandled "${head}" skipped`);
     }
+  }
+
+  // 网络名挂在真实导线上。引脚直贴标签先沿引脚向外引出 100 mil，避免文字压住引脚。
+  const onLine = (p, b) => Math.abs((p.x - b.startX) * (b.endY - b.startY) - (p.y - b.startY) * (b.endX - b.startX)) < 1e-5
+    && p.x >= Math.min(b.startX, b.endX) - 1e-5 && p.x <= Math.max(b.startX, b.endX) + 1e-5
+    && p.y >= Math.min(b.startY, b.endY) - 1e-5 && p.y <= Math.max(b.startY, b.endY) + 1e-5;
+  for (const label of netLabels) {
+    const pin = placedPins.find(p => Math.abs(p.x - label.x) < 1e-5 && Math.abs(p.y - label.y) < 1e-5);
+    let wire = pageRecords.find(r => r.head.type === 'LINE' && onLine(label, r.body));
+    let { x, y } = label;
+    let dx = Math.round(Math.cos(label.rotation * Math.PI / 180));
+    let dy = -Math.round(Math.sin(label.rotation * Math.PI / 180));
+    if (!wire) {
+      if (pin) { dx = pin.dx; dy = pin.dy; }
+      const gid = randId();
+      rec('WIRE', { groupId: '', locked: false }, gid);
+      // 紧邻其他引脚或导线时缩短引线，不能为了排版制造短路。
+      const obstacles = [...placedPins, ...netLabels, ...pageRecords.filter(r => r.head.type === 'LINE')
+        .flatMap(r => [{ x: r.body.startX, y: r.body.startY }, { x: r.body.endX, y: r.body.endY }])]
+        .filter(p => Math.abs(p.x - x) > 1e-5 || Math.abs(p.y - y) > 1e-5);
+      const length = [10, 5, 2.5, 1.25].find(len => {
+        const seg = { startX: x, startY: y, endX: x + dx * len, endY: y + dy * len };
+        return !obstacles.some(p => onLine(p, seg)) && !pageRecords.some(r => r.head.type === 'LINE' && onLine({ x: seg.endX, y: seg.endY }, r.body));
+      });
+      if (!length) throw new Error(`网络 ${label.value} 没有安全的短引线空间 (${x}, ${y})`);
+      const endX = x + dx * length, endY = y + dy * length;
+      rec('LINE', { startX: x, startY: y, endX, endY, lineGroup: gid,
+        strokeColor: null, strokeStyle: 'SOLID', strokeWidth: null, fillColor: null, fillStyle: 'NONE' });
+      wire = pageRecords.at(-1);
+      x = endX; y = endY;
+    }
+    const b = wire.body;
+    if (Math.abs(x - b.startX) < 1e-5 && Math.abs(y - b.startY) < 1e-5) {
+      dx = Math.sign(b.startX - b.endX); dy = Math.sign(b.startY - b.endY);
+    } else if (Math.abs(x - b.endX) < 1e-5 && Math.abs(y - b.endY) < 1e-5) {
+      dx = Math.sign(b.endX - b.startX); dy = Math.sign(b.endY - b.startY);
+    }
+    const vertical = dy !== 0;
+    const align = vertical ? (dy < 0 ? 'LEFT_BOTTOM' : 'RIGHT_BOTTOM') : (dx < 0 ? 'RIGHT_BOTTOM' : 'LEFT_BOTTOM');
+    pageRecords.push(pageAttr(wire.body.lineGroup, ++ticket, 'NET', label.value,
+      x + dx * 2, y + dy * 2, align, { rotation: vertical ? 90 : 0, fontSize: label.size }));
   }
 
   for (const [x, y] of noConnects) {

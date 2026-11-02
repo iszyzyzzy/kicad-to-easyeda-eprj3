@@ -294,10 +294,9 @@ function buildSymbolRecords(kicadSym, opts = {}) {
     const vertical = rotation === 90 || rotation === 270;
     const textRotation = vertical ? 90 : 0;
     const nameAlign = (rotation === 180 || rotation === 270) ? 'RIGHT_MIDDLE' : 'LEFT_MIDDLE';
-    const numAlign = (rotation === 180 || rotation === 270) ? 'LEFT_BOTTOM' : 'RIGHT_BOTTOM';
+    const numAlign = 'CENTER_BOTTOM';
     const nameVisible = !opts.isPower && !kicadSym.hidePinNames && !pin.nameHide && !!pinName;
     const numberVisible = !opts.isPower && !kicadSym.hidePinNumbers && !pin.numberHide && !!pin.number;
-    const numOff = Math.min(5, length / 2);
     const electric = PIN_ELECTRIC_MAP[pin.electric] != null ? PIN_ELECTRIC_MAP[pin.electric] : 0;
     const pinAttr = (key, value, o) => {
       ticket++;
@@ -321,7 +320,7 @@ function buildSymbolRecords(kicadSym, opts = {}) {
       rotation: textRotation, align: nameAlign, fontSize: schX(pin.nameSize || 1.27)
     });
     pinAttr('Pin Number', pin.number || '', {
-      visible: numberVisible, x: r2(endX - dir.x * numOff), y: r2(endY - dir.y * numOff),
+      visible: numberVisible, x: r2(endX - dir.x * length / 2 - (vertical ? 1 : 0)), y: r2(endY - dir.y * length / 2 - (vertical ? 0 : 1)),
       rotation: textRotation, align: numAlign, fontSize: schX(pin.numberSize || 1.27)
     });
     pinAttr('Pin Type', PIN_TYPE_NAME[electric] || 'Undefined', {

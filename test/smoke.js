@@ -198,7 +198,7 @@ function main() {
       'convert-kicad emits Designator/Name ATTRs linked to the component');
     const frameComp = pageDoc.records.find(r => r.type === 'COMPONENT' && r.body.zIndex === null);
     const pageAttrs = pageDoc.records.filter(r => r.type === 'ATTR');
-    assert(pageAttrs.every(r => r.body.key === '_NETLABEL_' || r.body.key === 'NO_CONNECT' || r.body.parentId === comp.head.id || (frameComp && r.body.parentId === frameComp.head.id)),
+    assert(pageAttrs.every(r => r.body.key === 'NET' || r.body.key === 'NO_CONNECT' || r.body.parentId === comp.head.id || (frameComp && r.body.parentId === frameComp.head.id)),
       'every page ATTR.parentId == COMPONENT id (frame attrs belong to the frame COMPONENT)');
     const wireRec = pageDoc.records.find(r => r.type === 'WIRE');
     assert(pageDoc.records.some(r => r.type === 'LINE' && r.body.lineGroup)
@@ -266,7 +266,7 @@ function main() {
     const nc = pageDoc.records.find(r => r.type === 'ATTR' && r.body.key === 'NO_CONNECT');
     assert(nc && nc.body.value === 'yes' && nc.body.parentId.startsWith(comp.head.id),
       '未连接标记绑定实际派生引脚');
-    assert(pageDoc.records.some(r => r.type === 'ATTR' && r.body.key === '_NETLABEL_' && r.body.value === 'GLOB'), '网络标签写成客户端识别的根 ATTR');
+    assert(pageDoc.records.some(r => r.type === 'ATTR' && r.body.key === 'NET' && r.body.value === 'GLOB'), '网络名绑定客户端导线组');
     const txt = pageDoc.records.find(r => r.type === 'TEXT' && r.body.value === 'hello');
     assert(txt && Math.abs(txt.body.x - kicadToSchUnit(40)) < 0.01 && txt.body.y < 0 && txt.body.fontSize === 7.87,
       'text becomes a TEXT record in flipped 0.254 mm units (2 mm font = 7.87 units)');
