@@ -51,7 +51,7 @@ try {
   assert.equal(records.find(r => r.type === 'ATTR' && r.body.key === 'Designator' && r.body.value === 'J1').body.valueVisible, false);
   assert.equal(records.find(r => r.type === 'ATTR' && r.body.key === 'Name' && r.body.value === 'V').body.valueVisible, true);
   assert.ok(records.find(r => r.type === 'ATTR' && r.body.key === 'Footprint')?.body.value);
-  assert.equal(records.find(r => r.type === 'ATTR' && r.body.key === 'NET').body.rotation, 90);
+  assert.equal(records.find(r => r.type === 'ATTR' && r.body.key === 'NET' && r.body.value === 'SIG').body.rotation, 90);
   assert.equal(records.find(r => r.type === 'ATTR' && r.body.key === 'Pin Name').body.fontSize, 5);
   const component = records.find(r => r.type === 'COMPONENT' && r.body.partId === 'TEST.1');
   assert.ok(component.body.y % 5 === 0);
