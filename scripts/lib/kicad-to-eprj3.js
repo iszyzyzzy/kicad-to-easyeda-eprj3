@@ -401,10 +401,15 @@ function footprintPadRecord(pad, opts = {}) {
     kicadToEprj3(+x + p.x * Math.cos(angle) + p.y * Math.sin(angle)),
     flipY(+y) + kicadToEprj3(p.x * Math.sin(angle) - p.y * Math.cos(angle))
   ]));
-  const span = pad.polygon ? Math.max(...pad.polygon.map(p => Math.hypot(p.x, p.y))) * 2 : Math.min(+w, +h);
+  // 禁用开窗时越过客户端的包围盒判空阈值，避免对指状电极做无意义的内缩布尔运算。
+  // 对角线覆盖任意实例旋转后的宽高；余量保证严格大于而非相等。
+  const polygonXs = pad.polygon?.map(p => p.x), polygonYs = pad.polygon?.map(p => p.y);
+  const closedExpansion = pad.polygon
+    ? Math.hypot(Math.max(...polygonXs) - Math.min(...polygonXs), Math.max(...polygonYs) - Math.min(...polygonYs)) + 0.001
+    : Math.min(+w, +h) / 2;
   const layers = pad.layers || [];
   const opening = (side, kind, fallback) => layers.includes(`${side}.${kind}`) || layers.includes(`*.${kind}`)
-    ? fallback : -kicadToEprj3(span) / 2;
+    ? fallback : -kicadToEprj3(closedExpansion);
   return {
     head: { type: 'PAD', ticket: opts.ticket, id: opts.id },
     body: {

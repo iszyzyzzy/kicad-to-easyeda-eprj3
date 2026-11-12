@@ -30,6 +30,19 @@ assert(inside(comb.polygon,1,0.8));
 assert(inside(comb.polygon,0,0));
 assert(!inside(comb.polygon,1,0));
 assert(inside(comb.polygon,1.39,0.8));
+const combRecord = footprintPadRecord(comb).body;
+for (let degrees=0; degrees<360; degrees+=15) {
+ const a=degrees*Math.PI/180;
+ const points=comb.polygon.map(p=>[p.x*Math.cos(a)-p.y*Math.sin(a),p.x*Math.sin(a)+p.y*Math.cos(a)]);
+ const x=points.map(p=>p[0]),y=points.map(p=>p[1]);
+ const width=(Math.max(...x)-Math.min(...x))*39.3700787, height=(Math.max(...y)-Math.min(...y))*39.3700787;
+ for(const key of ['topSolderExpansion','bottomSolderExpansion','topPasteExpansion','bottomPasteExpansion'])
+   assert(-combRecord[key]>Math.max(width,height), `${key}: 禁用开窗必须直接判空`);
+}
+const opened=footprintPadRecord({...comb,layers:['F.Cu','F.Mask','F.Paste']}).body;
+assert.equal(opened.topSolderExpansion,2);
+assert.equal(opened.topPasteExpansion,0);
+
 const boardShape = shape.replace('(xy -0.15 -1.75)', '(xy -0.15 -1.7) (xy -0.1 -1.75)');
 const boardPad = extractPads(parse(`(footprint "F" ${boardShape})`))[0];
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(),'custom-pad-'));
