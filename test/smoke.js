@@ -410,3 +410,5 @@ function main() {
 main();
 require('./pcb-fidelity');
 require('./schematic-fidelity');
+
+require('./custom-pad');

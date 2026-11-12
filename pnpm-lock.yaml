@@ -1,0 +1,22 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      clipper-lib:
+        specifier: ^6.4.2
+        version: 6.4.2
+
+packages:
+
+  clipper-lib@6.4.2:
+    resolution: {integrity: sha512-knglhjQX5ihNj/XCIs6zCHrTemdvHY3LPZP9XB2nq2/3igyYMFueFXtfp84baJvEE+f8pO1ZS4UVeEgmLnAprQ==}
+
+snapshots:
+
+  clipper-lib@6.4.2: {}

@@ -274,6 +274,7 @@ function extractPads(node) {
       }
       else if (sh === 'net') pad.netName = sub[2]?.v || '';
     }
+    if (pad.shape === 'custom') pad.polygon = require('./custom-pad').customPadPolygon(it, pad, { findSub, findSubNode, extractPts, strokeWidthOf });
     pads.push(pad);
   }
   return pads;

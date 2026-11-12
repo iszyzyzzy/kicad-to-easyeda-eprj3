@@ -996,8 +996,37 @@ function convertPcb(srcFile, dst, pcb) {
     return ticket;
   };
   const pcbLineCommon = { partitionId: '', groupId: 0, locked: false, zIndex: -1 };
+  // 封装也可承载板边，必须与板级轮廓一起闭合。
+  const boardNodes = root.slice(1);
+  for (const fp of root.slice(1)) {
+    if (!Array.isArray(fp) || fp[0]?.v !== 'footprint') continue;
+    const at = findSub(fp, 'at') || [0, 0, 0];
+    const angle = Number(at[2] || 0) * Math.PI / 180;
+    for (const shape of fp.slice(1)) {
+      if (!Array.isArray(shape) || findSub(shape, 'layer')?.[0] !== 'Edge.Cuts') continue;
+      if (!['fp_line', 'fp_arc', 'fp_poly', 'fp_circle', 'fp_rect'].includes(shape[0]?.v)) continue;
+      const transformed = structuredClone(shape);
+      transformed[0].v = shape[0].v.replace('fp_', 'gr_');
+      if (shape[0].v === 'fp_rect') {
+        const a = findSub(shape, 'start'), b = findSub(shape, 'end');
+        transformed[0].v = 'gr_poly';
+        transformed.push([{v:'pts'}, ...[[a[0],a[1]],[b[0],a[1]],[b[0],b[1]],[a[0],b[1]]].map(p => [{v:'xy'},{v:p[0]},{v:p[1]}])]);
+      }
+      const transform = n => {
+        if (!Array.isArray(n)) return;
+        if (['start','end','mid','center','xy'].includes(n[0]?.v)) {
+          const x = Number(n[1].v), y = Number(n[2].v);
+          n[1].v = String(Number(at[0]) + x * Math.cos(angle) + y * Math.sin(angle));
+          n[2].v = String(Number(at[1]) - x * Math.sin(angle) + y * Math.cos(angle));
+        } else n.forEach(transform);
+      };
+      transform(transformed);
+      boardNodes.push(transformed);
+    }
+  }
 
-  for (const node of root.slice(1)) {
+
+  for (const node of boardNodes) {
     if (!Array.isArray(node)) continue;
     const head = node[0].v;
 
@@ -1451,7 +1480,7 @@ function convertFootprint(node, ctx) {
   const layerArr = findSub(node, 'layer');
   const fpLayer = layerArr ? layerArr[0] : 'F.Cu';
   const pads = extractPads(node);
-  const shapes = extractFpShapes(node);
+  const shapes = extractFpShapes(node).filter(s => s.layer !== 'Edge.Cuts');
   const rotation = Number(at?.[2]) || 0;
   const back = fpLayer === 'B.Cu';
   // KiCad 焊盘角度是绝对角度，中心坐标却是封装局部坐标。
@@ -1461,6 +1490,7 @@ function convertFootprint(node, ctx) {
     pad.angle = (Number(pad.angle) - rotation) * (back ? -1 : 1);
     if (back) {
       pad.at[1] = -Number(pad.at[1]);
+      if (pad.polygon) pad.polygon = pad.polygon.map(p => ({ x: p.x, y: -p.y }));
       pad.layers = pad.layers.map(swapLayer);
     }
   }
@@ -1586,6 +1616,7 @@ function extractPads(node) {
       }
       else if (sh === 'net') pad.netName = sub[2]?.v || (sub[1]?.t === 'str' ? sub[1].v : '');
     }
+    if (pad.shape === 'custom') pad.polygon = require('./lib/custom-pad').customPadPolygon(it, pad, { findSub, findSubNode, extractPts, strokeWidthOf });
     pads.push(pad);
   }
   return pads;

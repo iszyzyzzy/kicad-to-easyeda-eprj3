@@ -362,7 +362,7 @@ function buildSymbolRecords(kicadSym, opts = {}) {
   return { records, partId, nameOff };
 }
 
-const PAD_SHAPE_MAP = { circle: 'ELLIPSE', oval: 'OVAL', roundrect: 'RECT', rect: 'RECT', custom: 'RECT', trapezoid: 'RECT' };
+const PAD_SHAPE_MAP = { circle: 'ELLIPSE', oval: 'OVAL', roundrect: 'RECT', rect: 'RECT', custom: 'POLYGON', trapezoid: 'RECT' };
 
 function footprintPadLayerId(pad) {
   const layers = pad.layers || [];
@@ -386,16 +386,18 @@ function footprintPadRecord(pad, opts = {}) {
   const [x, y] = pad.at && pad.at.length >= 2 ? pad.at : [0, 0];
   const [w, h] = pad.size && pad.size.length >= 2 ? pad.size : [1, 1];
   const shape = PAD_SHAPE_MAP[pad.shape] || 'RECT';
+  const polygonPath = pad.polygon && pcbPolygonPath(pad.polygon.flatMap(p => [kicadToEprj3(p.x), flipY(p.y)]));
+  const span = pad.polygon ? Math.max(...pad.polygon.map(p => Math.hypot(p.x, p.y))) * 2 : Math.min(+w, +h);
   const layers = pad.layers || [];
   const opening = (side, kind, fallback) => layers.includes(`${side}.${kind}`) || layers.includes(`*.${kind}`)
-    ? fallback : -Math.min(kicadToEprj3(+w), kicadToEprj3(+h)) / 2;
+    ? fallback : -kicadToEprj3(span) / 2;
   return {
     head: { type: 'PAD', ticket: opts.ticket, id: opts.id },
     body: {
       groupId: 0, netName: pad.netName || '', layerId: footprintPadLayerId(pad), num: pad.number || '',
       centerX: kicadToEprj3(parseFloat(x)), centerY: flipY(parseFloat(y)),
       padAngle: ((Number(pad.angle) || 0) % 360 + 360) % 360, hole: footprintPadHole(pad),
-      defaultPad: { padType: shape, width: kicadToEprj3(parseFloat(w)), height: kicadToEprj3(parseFloat(h)), radius: shape === 'RECT' ? Math.min(kicadToEprj3(+w), kicadToEprj3(+h)) * (pad.roundrectRatio || 0) : 0 },
+      defaultPad: polygonPath ? { padType: 'POLYGON', path: polygonPath } : { padType: shape, width: kicadToEprj3(parseFloat(w)), height: kicadToEprj3(parseFloat(h)), radius: shape === 'RECT' ? Math.min(kicadToEprj3(+w), kicadToEprj3(+h)) * (pad.roundrectRatio || 0) : 0 },
       specialPad: [],
       padOffsetX: 0, padOffsetY: 0,
       // KiCad 第二个直径更大时，槽孔长轴沿 Y。
@@ -421,7 +423,8 @@ function nonCopperPadRecords(pad, ticket) {
     cy + px * Math.sin(angle) + py * Math.cos(angle)];
   const radius = Math.min(w, h) * (pad.roundrectRatio || 0);
   let path;
-  if (pad.shape === 'circle') path = ['CIRCLE', cx, cy, w / 2];
+  if (pad.polygon) path = pcbPolygonPath(pad.polygon.flatMap(p => point(kicadToEprj3(p.x), flipY(p.y))));
+  else if (pad.shape === 'circle') path = ['CIRCLE', cx, cy, w / 2];
   else if (pad.shape === 'oval') {
     const r = Math.min(w, h) / 2;
     const vertical = h > w;
@@ -469,6 +472,12 @@ function buildFootprintRecords(kicadFp, opts = {}) {
     if (y < minY) minY = y; if (y > maxY) maxY = y;
   };
   for (const pad of kicadFp.pads) {
+    if (pad.polygon) {
+      const angle = (Number(pad.angle) || 0) * Math.PI / 180;
+      for (const p of pad.polygon) add(kicadToEprj3(+pad.at[0] + p.x * Math.cos(angle) + p.y * Math.sin(angle)),
+        flipY(+pad.at[1]) + kicadToEprj3(p.x * Math.sin(angle) - p.y * Math.cos(angle)));
+      continue;
+    }
     const [px, py] = pad.at && pad.at.length >= 2 ? pad.at : [0, 0];
     const [w, h] = pad.size && pad.size.length >= 2 ? pad.size : [1, 1];
     add(kicadToEprj3(parseFloat(px)) - kicadToEprj3(parseFloat(w)), flipY(parseFloat(py)) - kicadToEprj3(parseFloat(h)));
@@ -504,7 +513,7 @@ function buildFootprintRecords(kicadFp, opts = {}) {
     ticket++;
     const lname = sh.layer || 'F.SilkS';
     // Fab/Courtyard/annotation graphics land on the Document layer (13)
-    const layerId = /SilkS$/.test(lname) ? (/^B\./.test(lname) ? 4 : 3) : 13;
+    const layerId = ({ 'F.Cu': 1, 'B.Cu': 2, 'F.SilkS': 3, 'B.SilkS': 4, 'F.Mask': 5, 'B.Mask': 6, 'F.Paste': 7, 'B.Paste': 8 })[lname] || 13;
     const width = Math.max(1, Math.round(kicadToEprj3(parseFloat(sh.width) || 0.15)));
     if (sh.kind === 'fp_line') {
       if (Math.hypot(sh.x1 - sh.x2, sh.y1 - sh.y2) < 1e-9) continue;

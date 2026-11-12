@@ -8,7 +8,9 @@
     "convert": "node scripts/convert-kicad.js",
     "convert-lib": "node scripts/convert-kicad-lib.js"
   },
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "keywords": [
     "kicad",
     "easyeda",
@@ -18,5 +20,8 @@
     "converter",
     "eda"
   ],
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "dependencies": {
+    "clipper-lib": "^6.4.2"
+  }
 }

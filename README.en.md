@@ -11,7 +11,7 @@ Convert KiCAD project files to the eprj3 project format of EasyEDA Pro, and KiCa
 
 ## Requirements
 
-- Node.js ≥ 18, with no npm dependencies.
+- Node.js ≥ 18; run `pnpm install` to install dependencies.
 
 ## Usage
 
