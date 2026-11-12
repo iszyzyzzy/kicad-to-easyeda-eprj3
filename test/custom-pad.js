@@ -31,20 +31,33 @@ assert(inside(comb.polygon,1.39,0.8));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(),'custom-pad-'));
 try {
  fs.mkdirSync(path.join(tmp,'src'));
- fs.writeFileSync(path.join(tmp,'src/board.kicad_pcb'), `(kicad_pcb (version 20211014) (net 1 "ROW")
- (footprint "F" (layer "B.Cu") (at 10 20 90) ${shape}
+ const footprint = (x,net) => `(footprint "F" (layer "B.Cu") (at ${x} 20 90) ${shape.replace('"ROW"',`"${net}"`)}
  (fp_rect (start 0 0) (end 1 2) (fill solid) (layer "B.Mask"))
- (fp_rect (start -3 -4) (end 3 4) (layer "Edge.Cuts"))))`);
+ (fp_rect (start -3 -4) (end 3 4) (layer "Edge.Cuts")))`;
+ fs.writeFileSync(path.join(tmp,'src/board.kicad_pcb'), `(kicad_pcb (version 20211014) (net 1 "ROW") (net 2 "COL")
+ ${footprint(10,'ROW')} ${footprint(30,'COL')})`);
  execFileSync(process.execPath,[path.resolve(__dirname,'../scripts/convert-kicad.js'),'convert',path.join(tmp,'src'),path.join(tmp,'out')],{stdio:'pipe'});
  const records=readRecords(path.join(tmp,'out/pcb/PCB1.epcb2'));
+ assert(!records.some(r=>r.type==='PART'));
+ const docs=[];
+ for(const r of records) { if(r.type==='DOCHEAD') docs.push({type:r.body.docType,records:[]}); else docs.at(-1).records.push(r); }
+ const footprints=docs.filter(d=>d.type==='FOOTPRINT');
+ assert.equal(footprints.length,1, '不同网络的实例共用同一份几何');
+ for(const doc of footprints) {
+   const layers=new Set(doc.records.filter(r=>r.type==='LAYER').map(r=>r.body.layerId));
+   for(const r of doc.records) if(r.body?.layerId) assert(layers.has(r.body.layerId));
+ }
+ assert(records.some(r=>r.type==='PAD_NET'&&r.body.padNet==='COL'));
  const actual=records.find(r=>r.type==='PAD').body;
  assert.equal(actual.padAngle,330);
- const expected=pad.polygon.map(p=>[p.x*39.3700787,p.y*39.3700787]).flat();
+ // 客户端直接使用路径坐标，不会按 PAD.center 再平移或旋转。
+ const expected=pad.polygon.map(p=>[(2+p.x*Math.cos(Math.PI/6)+p.y*Math.sin(Math.PI/6))*39.3700787,
+   (3-p.x*Math.sin(Math.PI/6)+p.y*Math.cos(Math.PI/6))*39.3700787]).flat();
  const actualCoords=actual.defaultPad.path.filter(p=>typeof p==='number').slice(0,-2);
  assert.equal(actualCoords.length,expected.length);
  actualCoords.forEach((v,i)=>assert(Math.abs(v-expected[i])<1e-5));
  assert(records.some(r=>r.type==='FILL'&&r.body.layerId===5));
  assert(records.some(r=>r.type==='PAD_NET'&&r.body.padNet==='ROW'));
- assert.equal(records.filter(r=>r.type==='POLY'&&r.body.polyType==='BOARD_OUTLINE').length,1);
+ assert.equal(records.filter(r=>r.type==='POLY'&&r.body.polyType==='BOARD_OUTLINE').length,2);
 } finally {fs.rmSync(tmp,{recursive:true,force:true});}
 console.log('自定义焊盘回归通过：接触指尺寸、圆头电极间隙、底层旋转、网络、开窗及封装板边。');

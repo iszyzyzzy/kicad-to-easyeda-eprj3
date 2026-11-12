@@ -61,6 +61,13 @@ const FRAME_TEMPLATE = require('./lib/frame-a4.json'); // extracted from a real 
 // Static PCB editor config (PRIMITIVE/LAYER_PHYS/RULE*/SILK_OPTS/D3_ATTRIBUTE/
 // PREFERENCE/PANELIZE) — the client hangs without it; extracted from a real export.
 const PCB_CONFIG = require('./lib/pcb-config.json');
+const { FOOTPRINT_CANVAS, FOOTPRINT_LAYERS } = require('./lib/elibz2');
+
+function footprintLayerRecords() {
+  const types = new Set(FOOTPRINT_LAYERS.map(layer => layer[0]));
+  return PCB_CONFIG.filter(r => r.type === 'LAYER' && types.has(r.body.layerType))
+    .map(r => ({ head: { type: 'LAYER', ticket: 1, id: r.id }, body: { ...r.body, use: true } }));
+}
 
 function docHead(docType, docUuid) {
   return { head: { type: 'DOCHEAD' }, body: { docType, client: uuid(16), uuid: docUuid, updateTime: Date.now(), version: String(Date.now()), editVersion: '4.1.36', user: {} } };
@@ -153,7 +160,8 @@ async function main() {
       const file = candidates.find(f => fs.existsSync(f));
       if (!file) { warn(`找不到原理图封装库：${name}`); continue; }
       const fp = require('./lib/kicad').parseFootprintFile(file);
-      const docUuid = uuid(16), built = buildFootprintRecords(fp);
+      const docUuid = uuid(16), built = buildFootprintRecords(fp, { includePart: false, canvasBody: FOOTPRINT_CANVAS });
+      built.records.unshift(...footprintLayerRecords());
       footprintDocs.push(docHead('FOOTPRINT', docUuid), metaRec(name), ...built.records);
       footprintLibrary.set(name, { name, docUuid });
     }
@@ -965,14 +973,14 @@ function convertPcb(srcFile, dst, pcb) {
   const usedFps = {};
   function ensureFootprintDoc(name, fpData) {
     // 同名封装可能有实例修改和底层镜像，不能仅按库名复用第一份几何。
-    const key = name + JSON.stringify(fpData);
+    const anonymized = { ...fpData, pads: fpData.pads.map(p => ({ ...p, netName: '' })) };
+    const key = name + JSON.stringify(anonymized);
     if (usedFps[key]) return usedFps[key];
     const docUuid = uuid(16);
     const devUuid = uuid(16);
-    // Library docs carry no instance nets — nets are wired per placement via PAD_NET.
-    const anonymized = { ...fpData, pads: fpData.pads.map(p => ({ ...p, netName: '' })) };
-    const { records: fpRecs, pads } = buildFootprintRecords({ name, pads: anonymized.pads, shapes: anonymized.shapes, value: fpData.value });
-    libDocs.push(docHead('FOOTPRINT', docUuid), metaRec(name), ...fpRecs);
+    // 网络属于实例，几何相同的阵列单元共用封装。
+    const { records: fpRecs, pads } = buildFootprintRecords({ name, pads: anonymized.pads, shapes: anonymized.shapes, value: fpData.value }, { includePart: false, canvasBody: FOOTPRINT_CANVAS });
+    libDocs.push(docHead('FOOTPRINT', docUuid), metaRec(name), ...footprintLayerRecords(), ...fpRecs);
     libDocs.push(docHead('DEVICE', devUuid), metaRec(name, { images: [], attributes: { Symbol: '', Footprint: docUuid } }));
     usedFps[key] = { name, docUuid, devUuid, pads };
     return usedFps[key];

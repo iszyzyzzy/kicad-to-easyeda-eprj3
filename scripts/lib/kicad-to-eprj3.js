@@ -386,7 +386,12 @@ function footprintPadRecord(pad, opts = {}) {
   const [x, y] = pad.at && pad.at.length >= 2 ? pad.at : [0, 0];
   const [w, h] = pad.size && pad.size.length >= 2 ? pad.size : [1, 1];
   const shape = PAD_SHAPE_MAP[pad.shape] || 'RECT';
-  const polygonPath = pad.polygon && pcbPolygonPath(pad.polygon.flatMap(p => [kicadToEprj3(p.x), flipY(p.y)]));
+  // 多边形路径已经处于封装坐标；客户端不会再加焊盘中心或 padAngle。
+  const angle = (Number(pad.angle) || 0) * Math.PI / 180;
+  const polygonPath = pad.polygon && pcbPolygonPath(pad.polygon.flatMap(p => [
+    kicadToEprj3(+x + p.x * Math.cos(angle) + p.y * Math.sin(angle)),
+    flipY(+y) + kicadToEprj3(p.x * Math.sin(angle) - p.y * Math.cos(angle))
+  ]));
   const span = pad.polygon ? Math.max(...pad.polygon.map(p => Math.hypot(p.x, p.y))) * 2 : Math.min(+w, +h);
   const layers = pad.layers || [];
   const opening = (side, kind, fallback) => layers.includes(`${side}.${kind}`) || layers.includes(`*.${kind}`)
