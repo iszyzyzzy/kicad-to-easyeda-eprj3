@@ -383,6 +383,15 @@ function footprintPadHole(pad) {
 }
 
 function footprintPadRecord(pad, opts = {}) {
+  // 简单矩形采用原生焊盘，2D、3D 和 Gerber 共用矩形尺寸定义。
+  if (pad.polygon?.length === 4) {
+    const xs = [...new Set(pad.polygon.map(p => p.x))].sort((a,b) => a-b);
+    const ys = [...new Set(pad.polygon.map(p => p.y))].sort((a,b) => a-b);
+    if (xs.length === 2 && ys.length === 2 && Math.abs(xs[0]+xs[1]) < 1e-9 && Math.abs(ys[0]+ys[1]) < 1e-9 &&
+        new Set(pad.polygon.map(p => `${p.x},${p.y}`)).size === 4)
+      return footprintPadRecord({ ...pad, shape: 'rect', size: [xs[1]-xs[0], ys[1]-ys[0]], polygon: undefined }, opts);
+  }
+
   const [x, y] = pad.at && pad.at.length >= 2 ? pad.at : [0, 0];
   const [w, h] = pad.size && pad.size.length >= 2 ? pad.size : [1, 1];
   const shape = PAD_SHAPE_MAP[pad.shape] || 'RECT';

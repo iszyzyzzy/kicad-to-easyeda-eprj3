@@ -954,7 +954,17 @@ function pcbConfigFor(root) {
       }
     }
   }
-  return [...config.filter(r => r.type !== 'LAYER_PHYS'), ...physical];
+  // 铜和基材之外，3D 预览仍需要表面层的物理位置。
+  // 源文件未定义的表面层使用零厚度，不凭空补制造厚度。
+  const surface = id => physical.find(r => JSON.parse(r.id)[1] === id) || {
+    type: 'LAYER_PHYS', id: JSON.stringify(['LAYER_PHYS', id]),
+    body: { material: [5,6].includes(id) ? 'solder_mask_blue' : '', thickness: 0,
+      permittivity: 0, lossTangent: 0, isKeepIsland: true }
+  };
+  const surfaceIds = [3,7,5,6,8,4];
+  const ordered = [3,7,5].map(surface).concat(physical.filter(r => !surfaceIds.includes(JSON.parse(r.id)[1])), [6,8,4].map(surface));
+  ordered.forEach((r,i) => { r.body.zIndex = i+1; });
+  return [...config.filter(r => r.type !== 'LAYER_PHYS'), ...ordered];
 }
 
 function convertPcb(srcFile, dst, pcb) {

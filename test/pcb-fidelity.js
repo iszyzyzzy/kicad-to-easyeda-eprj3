@@ -88,8 +88,8 @@ try {
   }
   assert.equal(main.find(r => r.type === 'LAYER' && r.body.layerId === 17).body.use, false);
   const stack = main.filter(r => r.type === 'LAYER_PHYS').sort((a, b) => a.body.zIndex - b.body.zIndex);
-  assert.deepEqual(stack.map(r => JSON.parse(r.id)[1]), [1, 361, 15, 362, 16, 363, 2]);
-  close(stack[0].body.thickness, 0.35); close(stack[3].body.thickness, 12.4);
+  assert.deepEqual(stack.map(r => JSON.parse(r.id)[1]), [3, 7, 5, 1, 361, 15, 362, 16, 363, 2, 6, 8, 4]);
+  close(stack[3].body.thickness, 0.35); close(stack[6].body.thickness, 12.4);
   assert.ok(main.some(r => r.type === 'LINE' && r.body.layerId === 15 && r.body.netName === 'GND'));
   const u1 = main.find(r => r.type === 'COMPONENT' && r.body.attrs['Unique ID'] === 'U1');
   const u1lib = docs.find(d => d.head.uuid === attrs.find(r => r.body.parentId === u1.id && r.body.key === 'Footprint').body.value);
